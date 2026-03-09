@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quiz Buzzer System</title>
+    <!-- Fonts -->
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=Inter:wght@400;500;700&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast hidden"></div>
+
+    <main class="app-container">
+        <!-- Site Header (Visible on all views) -->
+        <header class="global-header">
+            <div class="logo-container">
+                <img src="viglogo.png" alt="Vignan Logo" class="site-logo">
+            </div>
+            <h1 class="brand-title">TECHSPARK-2K26<span class="dot">.</span></h1>
+            <p class="subtitle">Technical Quiz</p>
+        </header>
+
+        <!-- ================= HOME VIEW ===============    == -->
+        <section id="home-view" class="view active">
+
+            <div class="card glass-panel">
+                <div class="action-buttons">
+                    <button class="btn primary-btn" id="btn-create-room">
+                        <span class="icon">👑</span> Host a Quiz
+                    </button>
+                    <div class="divider"><span>OR</span></div>
+
+                    <div class="join-form">
+                        <input type="text" id="input-room-code" placeholder="Room Code (4 Letters)" maxlength="4"
+                            autocomplete="off" />
+                        <input type="text" id="input-group-name" placeholder="Your Group Name" autocomplete="off" />
+                        <button class="btn secondary-btn" id="btn-join-room">
+                            <span class="icon">🚀</span> Join Room
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+
+        <!-- ================= HOST VIEW ================= -->
+        <section id="host-view" class="view hidden">
+            <header class="host-header glass-panel">
+                <div class="room-info">
+                    <span class="label">ROOM CODE</span>
+                    <h2 id="display-room-code" class="code-text" onclick="copyRoomCode()">ABCD</h2>
+                </div>
+                <div class="actions">
+                    <button id="btn-toggle-buzzers" class="btn secondary-btn" style="margin-right: 10px;">
+                        Disable Buzzers
+                    </button>
+                    <button id="btn-reset-buzzers" class="btn warning-btn" style="margin-right: 10px;">
+                        Reset Buzzers
+                    </button>
+                    <button id="btn-end-quiz" class="btn danger-btn">
+                        End Quiz
+                    </button>
+                </div>
+            </header>
+
+            <div class="dashboard">
+                <!-- Buzzes Panel -->
+                <div class="panel buzz-leaderboard glass-panel">
+                    <h3>Buzzer Order <span class="live-pulse"></span></h3>
+                    <ul id="buzzes-list" class="buzzes-list">
+                        <!-- Dynamic buzzes go here -->
+                        <div class="empty-state large">
+                            <div class="icon-pulse">🔔</div>
+                            <p>Waiting for buzzes...</p>
+                        </div>
+                    </ul>
+                </div>
+
+                <!-- Connected Groups Panel -->
+                <div class="panel connected-groups glass-panel">
+                    <h3>Teams & Points (<span id="teams-count">0</span>)</h3>
+                    <ul id="teams-list" class="teams-list">
+                        <!-- Dynamic teams go here -->
+                        <li class="empty-state">Waiting for players to join...</li>
+                    </ul>
+
+                    <h3 style="margin-top:2rem;color:var(--secondary)">Join Requests 📨</h3>
+                    <ul id="requests-list" class="teams-list">
+                        <li class="empty-state">No pending requests</li>
+                    </ul>
+
+                    <h3 style="margin-top:2rem;color:var(--danger)">Disqualified ❌</h3>
+                    <ul id="disqualified-list" class="teams-list">
+                        <li class="empty-state">None yet</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+
+        <!-- ================= PLAYER VIEW ================= -->
+        <section id="player-view" class="view hidden">
+            <div class="player-layout">
+                <div class="player-main">
+                    <div class="player-header glass-panel">
+                        <div>
+                            <span class="label">GROUP NAME</span>
+                            <h2 id="display-group-name">My Team</h2>
+                        </div>
+                        <div>
+                            <span class="label">ROOM</span>
+                            <h2 id="player-room-code">ABCD</h2>
+                        </div>
+                    </div>
+
+                    <div class="buzzer-container">
+                        <button id="buzzer-btn" class="buzzer-btn active">
+                            <div class="buzzer-inner">
+                                <span class="buzzer-text">BUZZ</span>
+                            </div>
+                        </button>
+                    </div>
+
+                    <div class="status-indicator">
+                        <p id="player-status-text">Buzzer is Active! Get ready.</p>
+                    </div>
+                </div>
+
+                <!-- Player Leaderboard Side Panel -->
+                <div class="player-sidebar">
+                    <div class="player-leaderboard glass-panel">
+                        <h3>Points Leaderboard</h3>
+                        <div id="player-points-list" class="points-grid vertical">
+                            <span class="empty-state">Waiting for scores...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Modals for Violations -->
+    <!-- Red Warning Modal (Player) -->
+    <div id="red-warning-modal" class="modal-overlay hidden">
+        <div class="modal-content red-glow">
+            <h2>⚠️ WARNING</h2>
+            <p>You are trying to open another tab or leave the game!</p>
+            <div class="modal-actions">
+                <button id="btn-warning-stay" class="btn primary-btn">Stay</button>
+                <button id="btn-warning-leave" class="btn warning-btn">Leave</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Freeze Modal (Player) -->
+    <div id="freeze-modal" class="modal-overlay hidden" style="pointer-events: none;">
+        <div class="modal-content frozen-glow">
+            <h2>❄️ FROZEN</h2>
+            <p id="global-freeze-text">Your page is locked. Host is reviewing your actions...</p>
+        </div>
+    </div>
+
+    <!-- Disqualified Screen (Player) -->
+    <div id="disqualified-modal" class="modal-overlay hidden" style="z-index: 10000;">
+        <div class="modal-content danger-glow">
+            <h2>❌ DISQUALIFIED</h2>
+            <p>You have been disqualified from the quiz.</p>
+        </div>
+    </div>
+
+    <!-- Host Alert Modal -->
+    <div id="host-alert-modal" class="modal-overlay hidden">
+        <div class="modal-content danger-glow" style="width: 500px;">
+            <h2>🚨 TAB SWITCH DETECTED</h2>
+            <p>The following teams are trying to open other tabs:</p>
+            <div id="violator-list-container" style="margin-top:1.5rem; max-height: 300px; overflow-y: auto;">
+                <!-- Violators will be listed here with individual buttons -->
+            </div>
+            <div class="modal-actions"
+                style="margin-top: 1.5rem; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 1rem;">
+                <p style="font-size: 0.9rem; color: var(--text-secondary);">Room will remain frozen until all violations
+                    are resolved.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Waiting for Approval Modal (Player) -->
+    <div id="waiting-modal" class="modal-overlay hidden">
+        <div class="modal-content glass-panel" style="text-align:center;">
+            <div class="loader" style="margin: 0 auto;"></div>
+            <h2 style="margin-top:1.5rem;">Waiting for Host Approval...</h2>
+            <p>Please wait while the host accepts your request to join.</p>
+        </div>
+    </div>
+
+    <!-- Socket.IO library -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="app.js"></script>
+</body>
+
+</html>
