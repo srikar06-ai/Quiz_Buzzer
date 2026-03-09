@@ -110,6 +110,9 @@ btnJoinRoom.addEventListener('click', () => {
     const code = inputRoomCode.value.trim().toUpperCase();
     const name = inputGroupName.value.trim();
 
+    // Trigger full-screen immediately on this gesture
+    requestFullScreen();
+
     if (!code || code.length !== 4) {
         showToast('Please enter a valid 4-letter room code', 'error');
         return;
@@ -169,7 +172,7 @@ socket.on('error', (msg) => {
 });
 
 // Fullscreen & Wake Lock Helpers
-async function requestFullScreen() {
+window.requestFullScreen = async function() {
     try {
         if (!document.fullscreenElement && !document.webkitFullscreenElement) {
             if (document.documentElement.requestFullscreen) {
@@ -182,8 +185,15 @@ async function requestFullScreen() {
         if ('wakeLock' in navigator) {
             wakeLock = await navigator.wakeLock.request('screen');
         }
-    } catch (e) { console.log("Immersive mode blocked:", e); }
+    } catch (e) { 
+        console.log("Immersive mode blocked:", e);
+        showToast('Please tap "Go Fullscreen" to enable protections', 'info');
+    }
 }
+
+// Re-request on any modal interaction (to fix mobile block)
+if (freezeModal) freezeModal.addEventListener('click', requestFullScreen);
+if (redWarningModal) redWarningModal.addEventListener('click', requestFullScreen);
 
 async function releaseImmersiveMode() {
     try {
