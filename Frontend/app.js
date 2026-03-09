@@ -16,6 +16,7 @@ const inputGroupName = document.getElementById('input-group-name');
 // Host Elements
 const displayRoomCode = document.getElementById('display-room-code');
 const btnResetBuzzers = document.getElementById('btn-reset-buzzers');
+const btnToggleFreeze = document.getElementById('btn-toggle-freeze');
 const btnToggleBuzzers = document.getElementById('btn-toggle-buzzers');
 const teamsList = document.getElementById('teams-list');
 const teamsCount = document.getElementById('teams-count');
@@ -346,6 +347,26 @@ socket.on('disqualified_update', (disqualified) => {
     renderDisqualified(disqualified);
 });
 
+// Host: Manual Freeze
+if (btnToggleFreeze) {
+    btnToggleFreeze.addEventListener('click', () => {
+        const currentlyFrozen = btnToggleFreeze.classList.contains('active-action');
+        socket.emit('toggle_manual_freeze', { code: currentRoomCode, freeze: !currentlyFrozen });
+    });
+}
+
+socket.on('manual_freeze_status', ({ freeze }) => {
+    if (freeze) {
+        btnToggleFreeze.classList.add('active-action');
+        btnToggleFreeze.innerHTML = 'Unfreeze Room';
+        btnToggleFreeze.style.background = '#ef4444';
+    } else {
+        btnToggleFreeze.classList.remove('active-action');
+        btnToggleFreeze.innerHTML = 'Freeze Room';
+        btnToggleFreeze.style.background = '#8b5cf6';
+    }
+});
+
 // TAB VIOLATION LOGIC
 let lastViolatorSocketId = null;
 
@@ -391,10 +412,13 @@ document.addEventListener('contextmenu', (e) => {
 });
 
 // Global Freeze Listener
-socket.on('global_freeze', ({ violatorNames, pendingNames }) => {
+socket.on('global_freeze', ({ violatorNames, pendingNames, manualFreeze }) => {
     if (isHost) return;
     if (globalFreezeText) {
         let msg = '';
+        if (manualFreeze) {
+            msg += `🔒 <strong style="color:var(--primary-color)">Room is manually frozen by Host</strong>.<br>`;
+        }
         if (violatorNames && violatorNames.length > 0) {
             const names = violatorNames.join("', '");
             msg += `⚠️ <strong style="color:var(--danger)">Teams '${names}'</strong> are trying to open other tabs!<br>`;
@@ -404,8 +428,7 @@ socket.on('global_freeze', ({ violatorNames, pendingNames }) => {
             msg += `📨 <strong style="color:var(--secondary)">Teams '${names}'</strong> are requesting to join!<br>`;
         }
 
-        if (!msg) msg = 'Page is frozen by Host for review.';
-        else msg += 'Page is frozen by Host.';
+        if (!msg) msg = 'Page is frozen by Host.';
 
         globalFreezeText.innerHTML = msg;
     }
@@ -460,6 +483,8 @@ socket.on('violation_resolved', ({ action, targetSocketId }) => {
         showToast('Host resumed the game!', 'success');
     } else if (action === 'join_resolved') {
         showToast('Host resolved join requests!', 'success');
+    } else if (action === 'manual_unfreeze') {
+        showToast('Host unfrozen the room!', 'success');
     } else if (action === 'disqualify') {
         if (socket.id === targetSocketId) {
             if (disqualifiedModal) disqualifiedModal.classList.remove('hidden');

@@ -46,6 +46,7 @@ io.on('connection', (socket) => {
             groups: {}, // maps socketId -> { name, points }
             buzzes: [],
             buzzesAllowed: false, // Start with buzzers disabled
+            manualFreeze: false, // Manual override by host
             disqualified: [],
             activeViolations: {}, // maps socketId -> name
             pendingRequests: {} // maps socketId -> name
@@ -78,7 +79,11 @@ io.on('connection', (socket) => {
         // Freeze everyone while host reviews join request (including the new one)
         const allPendingNames = Object.values(room.pendingRequests);
         const violatorNames = Object.values(room.activeViolations);
-        io.to(code).emit('global_freeze', { pendingNames: allPendingNames, violatorNames });
+        io.to(code).emit('global_freeze', {
+            pendingNames: allPendingNames,
+            violatorNames,
+            manualFreeze: room.manualFreeze
+        });
 
         // Notify host
         io.to(room.host).emit('join_request', { socketId: socket.id, name });
@@ -122,10 +127,11 @@ io.on('connection', (socket) => {
         const remainingPending = Object.values(room.pendingRequests);
         const remainingViolating = Object.values(room.activeViolations);
 
-        if (remainingPending.length > 0 || remainingViolating.length > 0) {
+        if (remainingPending.length > 0 || remainingViolating.length > 0 || room.manualFreeze) {
             io.to(code).emit('global_freeze', {
                 pendingNames: remainingPending,
-                violatorNames: remainingViolating
+                violatorNames: remainingViolating,
+                manualFreeze: room.manualFreeze
             });
         } else {
             io.to(code).emit('violation_resolved', { action: 'join_resolved', targetSocketId });
@@ -185,7 +191,6 @@ io.on('connection', (socket) => {
         io.to(code).emit('reset', { buzzesAllowed: true });
         console.log(`Buzzers reset for room ${code}`);
     });
-
     // Host toggles buzzers
     socket.on('toggle_buzzers', ({ code, active }) => {
         code = code.toUpperCase();
@@ -199,6 +204,37 @@ io.on('connection', (socket) => {
         }
         io.to(code).emit('buzzer_state', { active });
         console.log(`Buzzers toggled for room ${code}: ${active}`);
+    });
+
+    // Host toggles manual freeze
+    socket.on('toggle_manual_freeze', ({ code, freeze }) => {
+        code = code.toUpperCase();
+        const room = rooms[code];
+        if (!room || room.host !== socket.id) return;
+
+        room.manualFreeze = freeze;
+        if (freeze) {
+            const pendingNames = Object.values(room.pendingRequests);
+            const violatorNames = Object.values(room.activeViolations);
+            io.to(code).emit('global_freeze', {
+                pendingNames,
+                violatorNames,
+                manualFreeze: true
+            });
+        } else {
+            const pendingNames = Object.values(room.pendingRequests);
+            const violatorNames = Object.values(room.activeViolations);
+            if (pendingNames.length === 0 && violatorNames.length === 0) {
+                io.to(code).emit('violation_resolved', { action: 'manual_unfreeze' });
+            } else {
+                io.to(code).emit('global_freeze', {
+                    pendingNames,
+                    violatorNames,
+                    manualFreeze: false
+                });
+            }
+        }
+        socket.emit('manual_freeze_status', { freeze });
     });
 
     // Host updates points
@@ -227,7 +263,11 @@ io.on('connection', (socket) => {
             // Broadcast ALL reasons currently freezing the room
             const violatorNames = Object.values(room.activeViolations);
             const pendingNames = Object.values(room.pendingRequests);
-            io.to(code).emit('global_freeze', { violatorNames, pendingNames });
+            io.to(code).emit('global_freeze', {
+                violatorNames,
+                pendingNames,
+                manualFreeze: room.manualFreeze
+            });
 
             // Specifically notify host with the full list + socket details
             io.to(room.host).emit('tab_violation_alert', {
@@ -265,11 +305,12 @@ io.on('connection', (socket) => {
         const remainingViolatorNames = Object.values(room.activeViolations);
         const remainingPendingNames = Object.values(room.pendingRequests);
 
-        if (remainingViolatorNames.length > 0 || remainingPendingNames.length > 0) {
+        if (remainingViolatorNames.length > 0 || remainingPendingNames.length > 0 || room.manualFreeze) {
             // Still frozen for some reason
             io.to(code).emit('global_freeze', {
                 violatorNames: remainingViolatorNames,
-                pendingNames: remainingPendingNames
+                pendingNames: remainingPendingNames,
+                manualFreeze: room.manualFreeze
             });
 
             // If there were violators, update host's violation panel
@@ -278,11 +319,11 @@ io.on('connection', (socket) => {
                     violations: Object.entries(room.activeViolations).map(([id, name]) => ({ socketId: id, name }))
                 });
             } else {
-                // If NO violators but still frozen (members pending), close violation alert
+                // If NO violators but still frozen (members pending or manual), close violation alert
                 io.to(room.host).emit('tab_violation_alert', { violations: [] });
             }
         } else {
-            // All reasons cleared (no violators AND no pending requests)
+            // All reasons cleared (no violators AND no pending requests AND no manual freeze)
             io.to(code).emit('violation_resolved', { action, targetSocketId });
         }
 
