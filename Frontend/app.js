@@ -447,25 +447,24 @@ window.resolveTeam = (socketId, action) => {
 
 // Host: Resolve UI updates
 socket.on('violation_resolved', ({ action, targetSocketId }) => {
-    // If no violators left on host screen, hide modal
+    // If host, just hide our local violation modal
     if (isHost) {
-        // The server sends tab_violation_alert with 0 violations if all cleared
-        // But we specifically hide it on unfreeze
         if (hostAlertModal) hostAlertModal.classList.add('hidden');
         return;
     }
 
+    // Participants: hide the freeze overlay
+    if (freezeModal) freezeModal.classList.add('hidden');
+
     if (action === 'letgo') {
-        if (freezeModal) freezeModal.classList.add('hidden');
-        // Resume from previous state - no refresh needed
         showToast('Host resumed the game!', 'success');
+    } else if (action === 'join_resolved') {
+        showToast('Host resolved join requests!', 'success');
     } else if (action === 'disqualify') {
         if (socket.id === targetSocketId) {
-            if (freezeModal) freezeModal.classList.add('hidden');
             if (disqualifiedModal) disqualifiedModal.classList.remove('hidden');
             releaseImmersiveMode();
         } else {
-            if (freezeModal) freezeModal.classList.add('hidden');
             showToast('A violator was disqualified. Game resumes.', 'warning');
         }
     }
