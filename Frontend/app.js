@@ -46,6 +46,9 @@ const disqualifiedList = document.getElementById('disqualified-list');
 const requestsList = document.getElementById('requests-list');
 const btnEndQuiz = document.getElementById('btn-end-quiz');
 const waitingModal = document.getElementById('waiting-modal');
+const leaderboardModal = document.getElementById('leaderboard-modal');
+const leaderboardContainer = document.getElementById('leaderboard-container');
+const btnDownloadPdf = document.getElementById('btn-download-pdf');
 
 // Host Confirm Modal
 const hostConfirmModal = document.getElementById('host-confirm-modal');
@@ -54,6 +57,7 @@ const btnConfirmDisqualify = document.getElementById('btn-confirm-disqualify');
 const btnCancelDisqualify = document.getElementById('btn-cancel-disqualify');
 
 // State
+let lastGlobalResults = null;
 let pendingDisqualifySocketId = null;
 let currentRoomCode = '';
 let currentGroupName = '';
@@ -336,14 +340,145 @@ socket.on('reset', (data) => {
     }
 });
 
-// HOST / PLAYER: Room closed
-socket.on('room_closed', () => {
-    showToast('Room was closed by the host', 'error');
+// HOST / PLAYER: Room closed with Final Results
+socket.on('room_closed', (results) => {
     releaseImmersiveMode();
-    setTimeout(() => {
-        window.location.reload();
-    }, 2000);
+
+    if (results && (results.teams || results.disqualified)) {
+        lastGlobalResults = results;
+        renderFinalLeaderboard(results);
+    } else {
+        showToast('Room was closed by the host', 'error');
+        setTimeout(() => {
+            window.location.reload();
+        }, 2000);
+    }
 });
+
+function renderFinalLeaderboard(results) {
+    if (!leaderboardContainer || !leaderboardModal) return;
+
+    leaderboardContainer.innerHTML = '';
+
+    // Sort teams by points
+    const sortedTeams = [...results.teams].sort((a, b) => b.points - a.points);
+
+    let html = `
+        <div style="margin-bottom: 2rem;">
+            <p style="font-size: 1.1rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Room Code: <strong style="color:var(--primary-color)">${results.code}</strong></p>
+            <p style="font-size: 0.9rem; color: var(--text-secondary);">Date: ${new Date().toLocaleString()}</p>
+        </div>
+        
+        <h4 style="margin-bottom: 1rem; color: var(--success); border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem;">Final Standings</h4>
+        <div style="display:flex; flex-direction:column; gap: 0.8rem; margin-bottom: 2rem;">
+    `;
+
+    sortedTeams.forEach((team, index) => {
+        const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`;
+        html += `
+            <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.05); padding: 1rem; border-radius: 8px;">
+                <div style="display:flex; align-items:center; gap: 1rem;">
+                    <span style="font-weight: 800; font-size: 1.2rem; min-width: 30px; color:var(--primary-color)">${medal}</span>
+                    <span style="font-weight: 600;">${team.name}</span>
+                </div>
+                <span style="font-weight: 800; color: var(--success); font-size: 1.1rem;">${team.points} pts</span>
+            </div>
+        `;
+    });
+
+    html += `</div>`;
+
+    if (results.disqualified && results.disqualified.length > 0) {
+        html += `
+            <h4 style="margin-bottom: 1rem; color: var(--danger); border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem;">Disqualified Teams</h4>
+            <div style="display:flex; flex-wrap:wrap; gap: 0.5rem;">
+        `;
+        results.disqualified.forEach(name => {
+            html += `<span style="background:rgba(239, 68, 68, 0.1); color:#ef4444; padding: 0.4rem 0.8rem; border-radius: 20px; font-size: 0.85rem; border: 1px solid rgba(239, 68, 68, 0.2);">❌ ${name}</span>`;
+        });
+        html += `</div>`;
+    }
+
+    leaderboardContainer.innerHTML = html;
+    leaderboardModal.classList.remove('hidden');
+}
+
+if (btnDownloadPdf) {
+    btnDownloadPdf.addEventListener('click', () => {
+        if (!lastGlobalResults) return;
+        generatePDF(lastGlobalResults);
+    });
+}
+
+async function generatePDF(results) {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+
+    // Header
+    doc.setFillColor(30, 30, 30);
+    doc.rect(0, 0, 210, 40, 'F');
+
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(22);
+    doc.text("QUIZ BUZZER - FINAL RESULTS", 105, 20, { align: "center" });
+
+    doc.setTextColor(200, 200, 200);
+    doc.setFontSize(12);
+    doc.text(`Room: ${results.code} | Date: ${new Date().toLocaleString()}`, 105, 30, { align: "center" });
+
+    // Standings
+    doc.setTextColor(0, 0, 0);
+    doc.setFontSize(16);
+    doc.setFont(undefined, 'bold');
+    doc.text("Final Standings", 20, 55);
+
+    let y = 65;
+    const sorted = [...results.teams].sort((a, b) => b.points - a.points);
+
+    doc.setFontSize(12);
+    doc.setFont(undefined, 'normal');
+
+    sorted.forEach((team, index) => {
+        if (y > 270) { doc.addPage(); y = 20; }
+
+        // Background for odd rows
+        if (index % 2 === 0) {
+            doc.setFillColor(245, 245, 245);
+            doc.rect(15, y - 5, 180, 10, 'F');
+        }
+
+        doc.text(`${index + 1}.`, 20, y);
+        doc.text(team.name, 35, y);
+        doc.text(`${team.points} Points`, 190, y, { align: "right" });
+        y += 10;
+    });
+
+    // Disqualified
+    if (results.disqualified && results.disqualified.length > 0) {
+        y += 10;
+        if (y > 270) { doc.addPage(); y = 20; }
+
+        doc.setFont(undefined, 'bold');
+        doc.setTextColor(239, 68, 68);
+        doc.text("Disqualified Teams", 20, y);
+        y += 10;
+
+        doc.setFont(undefined, 'normal');
+        doc.setTextColor(0, 0, 0);
+        results.disqualified.forEach(name => {
+            if (y > 270) { doc.addPage(); y = 20; }
+            doc.text(`• ${name}`, 25, y);
+            y += 7;
+        });
+    }
+
+    // Footer
+    doc.setFontSize(10);
+    doc.setTextColor(150, 150, 150);
+    doc.text("Generated by Quiz Buzzer App", 105, 285, { align: "center" });
+
+    doc.save(`Quiz_Results_${results.code}.pdf`);
+}
 
 // HOST: New group joined
 let connectedTeams = [];

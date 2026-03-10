@@ -353,7 +353,14 @@ io.on('connection', (socket) => {
         code = code.toUpperCase();
         const room = rooms[code];
         if (!room || room.host !== socket.id) return;
-        io.to(code).emit('room_closed');
+
+        const finalResults = {
+            code: code,
+            teams: Object.entries(room.groups).map(([id, g]) => ({ name: g.name, points: g.points })),
+            disqualified: room.disqualified
+        };
+
+        io.to(code).emit('room_closed', finalResults);
         delete rooms[code];
     });
 
@@ -364,7 +371,12 @@ io.on('connection', (socket) => {
         for (const code in rooms) {
             const room = rooms[code];
             if (room.host === socket.id) {
-                io.to(code).emit('room_closed');
+                const finalResults = {
+                    code: code,
+                    teams: Object.entries(room.groups).map(([id, g]) => ({ name: g.name, points: g.points })),
+                    disqualified: room.disqualified
+                };
+                io.to(code).emit('room_closed', finalResults);
                 delete rooms[code];
             } else if (room.groups[socket.id]) {
                 const groupName = room.groups[socket.id].name;
