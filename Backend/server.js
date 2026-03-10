@@ -7,6 +7,24 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
+// Time sync for nanosecond precision
+const startHrTime = process.hrtime.bigint();
+const startDate = Date.now();
+
+function getNanosecondTime() {
+    const currentHr = process.hrtime.bigint();
+    const elapsedNano = currentHr - startHrTime;
+    const currentTotalNano = (BigInt(startDate) * 1000000n) + elapsedNano;
+
+    const date = new Date(Number(currentTotalNano / 1000000n));
+    const h = String(date.getHours()).padStart(2, '0');
+    const m = String(date.getMinutes()).padStart(2, '0');
+    const s = String(date.getSeconds()).padStart(2, '0');
+    const nano = String(currentTotalNano % 1000000000n).padStart(9, '0');
+
+    return `${h}:${m}:${s}.${nano}`;
+}
+
 // Serve static files from the Frontend directory
 app.use(express.static(path.join(__dirname, '../Frontend')));
 
@@ -160,8 +178,7 @@ io.on('connection', (socket) => {
         const buzzData = {
             socketId: socket.id,
             name: name,
-            // process.hrtime.bigint() returns nanoseconds, so divide by 1000n for microseconds
-            timestamp: Number(process.hrtime.bigint() / 1000n)
+            timeStr: getNanosecondTime()
         };
 
         room.buzzes.push(buzzData);

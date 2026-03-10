@@ -622,19 +622,10 @@ function renderBuzzes(buzzes) {
 
         let rankStr = `#${index + 1}`;
 
-        // Calculate time difference if not first place
-        let timeDiffText = '';
-        if (index > 0) {
-            const diff = buzz.timestamp - buzzes[0].timestamp;
-            timeDiffText = `(+${diff}µs)`;
-        } else {
-            timeDiffText = `(+0µs)`;
-        }
-
         li.innerHTML = `
             <span class="rank">${rankStr}</span>
-            <span class="team-name">${buzz.name}</span>
-            <span class="time-diff">${timeDiffText}</span>
+            <span class="team-name" style="flex:1; margin-left:1rem;">${buzz.name}</span>
+            <span class="time-diff" style="font-family:monospace; font-size:0.75rem; color:var(--primary-color); opacity:0.8;">${buzz.timeStr}</span>
         `;
 
         buzzesList.appendChild(li);
