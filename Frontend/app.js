@@ -129,6 +129,7 @@ btnJoinRoom.addEventListener('click', () => {
         return;
     }
 
+    currentRoomCode = code;
     socket.emit('join_room', { code, name });
 });
 
@@ -170,6 +171,17 @@ buzzerBtn.addEventListener('touchstart', (e) => {
     buzzerBtn.click();
 }, { passive: false });
 
+
+if (btnWarningStay) {
+    btnWarningStay.addEventListener('click', () => {
+        if (redWarningModal) redWarningModal.classList.add('hidden');
+    });
+}
+if (btnWarningLeave) {
+    btnWarningLeave.addEventListener('click', () => {
+        window.location.reload();
+    });
+}
 
 // ----------------- Socket.IO Listeners -----------------
 
@@ -412,8 +424,11 @@ let lastViolatorSocketId = null;
 
 // Player: document visibility change (tab switch)
 function triggerViolationWarning() {
-    if (!isHost && views['player'].classList.contains('active')) {
-        // Immediate violation emission (No warning modal choice)
+    if (!isHost && currentRoomCode) {
+        // Show local warning modal
+        if (redWarningModal) redWarningModal.classList.remove('hidden');
+
+        // Emit violation to server (Freezes room for everyone)
         socket.emit('tab_violation', currentRoomCode);
     }
 }
@@ -516,8 +531,9 @@ socket.on('violation_resolved', ({ action, targetSocketId }) => {
         return;
     }
 
-    // Participants: hide the freeze overlay
+    // Participants: hide the freeze and warning overlays
     if (freezeModal) freezeModal.classList.add('hidden');
+    if (redWarningModal) redWarningModal.classList.add('hidden');
 
     if (action === 'letgo') {
         showToast('Host resumed the game!', 'success');

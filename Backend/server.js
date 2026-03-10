@@ -266,16 +266,16 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Participant Tab Violation
     socket.on('tab_violation', (code) => {
+        if (!code) return;
         code = code.toUpperCase();
         const room = rooms[code];
         if (!room) return;
 
-        const group = room.groups[socket.id];
-        if (group) {
+        const groupName = room.groups[socket.id] ? room.groups[socket.id].name : room.pendingRequests[socket.id];
+        if (groupName) {
             // Track this specific violation
-            room.activeViolations[socket.id] = group.name;
+            room.activeViolations[socket.id] = groupName;
 
             // Broadcast ALL reasons currently freezing the room
             const violatorNames = Object.values(room.activeViolations);
