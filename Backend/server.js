@@ -186,8 +186,8 @@ io.on('connection', (socket) => {
         // Let the user know they buzzed successfully
         socket.emit('buzz_registered', { rank: room.buzzes.length });
 
-        // Broadcast all buzzes to host
-        io.to(room.host).emit('buzzes_update', room.buzzes);
+        // Broadcast all buzzes to the entire room
+        io.to(code).emit('buzzes_update', room.buzzes);
     });
 
     // Host resets buzzers
@@ -201,8 +201,8 @@ io.on('connection', (socket) => {
         room.buzzes = [];
         room.buzzesAllowed = true;
 
-        // Notify host
-        socket.emit('buzzes_update', room.buzzes);
+        // Notify all to clear their buzzer lists
+        io.to(code).emit('buzzes_update', room.buzzes);
 
         // Notify all groups to reset their buzzer UI
         io.to(code).emit('reset', { buzzesAllowed: true });

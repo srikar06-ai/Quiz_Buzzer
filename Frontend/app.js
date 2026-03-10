@@ -21,6 +21,8 @@ const btnToggleBuzzers = document.getElementById('btn-toggle-buzzers');
 const teamsList = document.getElementById('teams-list');
 const teamsCount = document.getElementById('teams-count');
 const buzzesList = document.getElementById('buzzes-list');
+const hostLeaderboardSummary = document.getElementById('host-leaderboard-summary');
+const btnCopyLeaderboard = document.getElementById('btn-copy-leaderboard');
 
 // Player Elements
 const displayGroupName = document.getElementById('display-group-name');
@@ -28,7 +30,7 @@ const playerRoomCode = document.getElementById('player-room-code');
 const buzzerBtn = document.getElementById('buzzer-btn');
 const buzzerText = buzzerBtn.querySelector('.buzzer-text');
 const playerStatusText = document.getElementById('player-status-text');
-const playerPointsList = document.getElementById('player-points-list');
+const playerBuzzesList = document.getElementById('player-buzzes-list');
 const toastEl = document.getElementById('toast');
 
 // Modal Elements
@@ -46,18 +48,9 @@ const disqualifiedList = document.getElementById('disqualified-list');
 const requestsList = document.getElementById('requests-list');
 const btnEndQuiz = document.getElementById('btn-end-quiz');
 const waitingModal = document.getElementById('waiting-modal');
-const hostFinalResults = document.getElementById('host-final-results');
+const leaderboardModal = document.getElementById('leaderboard-modal');
 const leaderboardContainer = document.getElementById('leaderboard-container');
 const btnDownloadPdf = document.getElementById('btn-download-pdf');
-const btnCopyImage = document.getElementById('btn-copy-image');
-const playerEndedModal = document.getElementById('player-ended-modal');
-
-// Export Elements
-const exportContainer = document.getElementById('export-container');
-const exportRoomInfo = document.getElementById('export-room-info');
-const exportCol1 = document.getElementById('col-1');
-const exportCol2 = document.getElementById('col-2');
-const exportDisqualified = document.getElementById('export-disqualified');
 
 // Host Confirm Modal
 const hostConfirmModal = document.getElementById('host-confirm-modal');
@@ -248,6 +241,92 @@ if (btnEndQuiz) {
     });
 }
 
+// HOST: Copy Leaderboard Image
+if (btnCopyLeaderboard) {
+    btnCopyLeaderboard.addEventListener('click', async () => {
+        if (connectedTeams.length === 0) return;
+        
+        // Temporarily create a hidden container for the snapshot
+        const snapshotContainer = document.createElement('div');
+        snapshotContainer.style.position = 'fixed';
+        snapshotContainer.style.left = '-9999px';
+        snapshotContainer.style.top = '0';
+        snapshotContainer.style.background = '#0f172a';
+        snapshotContainer.style.color = 'white';
+        snapshotContainer.style.padding = '40px';
+        snapshotContainer.style.width = 'fit-content';
+        snapshotContainer.style.fontFamily = 'Inter, sans-serif';
+        
+        const title = document.createElement('h1');
+        title.textContent = `Leaderboard - Room ${currentRoomCode}`;
+        title.style.textAlign = 'center';
+        title.style.marginBottom = '30px';
+        title.style.color = '#38bdf8';
+        snapshotContainer.appendChild(title);
+
+        const listContainer = document.createElement('div');
+        listContainer.style.display = 'flex';
+        listContainer.style.gap = '40px';
+        
+        const sorted = [...connectedTeams].sort((a, b) => b.points - a.points);
+        
+        if (sorted.length > 25) {
+            // Two columns
+            const leftCol = document.createElement('div');
+            const rightCol = document.createElement('div');
+            leftCol.style.minWidth = '250px';
+            rightCol.style.minWidth = '250px';
+            
+            sorted.slice(0, 25).forEach((team, i) => addTeamToSnapshot(leftCol, team, i + 1));
+            sorted.slice(25).forEach((team, i) => addTeamToSnapshot(rightCol, team, i + 26));
+            
+            listContainer.appendChild(leftCol);
+            listContainer.appendChild(rightCol);
+        } else {
+            // Single column
+            const col = document.createElement('div');
+            col.style.minWidth = '300px';
+            sorted.forEach((team, i) => addTeamToSnapshot(col, team, i + 1));
+            listContainer.appendChild(col);
+        }
+        
+        snapshotContainer.appendChild(listContainer);
+        document.body.appendChild(snapshotContainer);
+        
+        try {
+            const canvas = await html2canvas(snapshotContainer);
+            canvas.toBlob(blob => {
+                const item = new ClipboardItem({ "image/png": blob });
+                navigator.clipboard.write([item]).then(() => {
+                    showToast('Leaderboard image copied to clipboard!', 'success');
+                });
+            });
+        } catch (err) {
+            console.error('Snapshot failed:', err);
+            showToast('Failed to copy image.', 'error');
+        } finally {
+            document.body.removeChild(snapshotContainer);
+        }
+    });
+}
+
+function addTeamToSnapshot(parent, team, rank) {
+    const item = document.createElement('div');
+    item.style.display = 'flex';
+    item.style.justifyContent = 'space-between';
+    item.style.padding = '8px 12px';
+    item.style.marginBottom = '6px';
+    item.style.background = 'rgba(255,255,255,0.05)';
+    item.style.borderRadius = '6px';
+    item.style.fontSize = '14px';
+    
+    item.innerHTML = `
+        <span><strong style="color:#38bdf8; margin-right:10px;">#${rank}</strong> ${team.name}</span>
+        <span style="font-weight:700; color:#4ade80;">${team.points} pts</span>
+    `;
+    parent.appendChild(item);
+}
+
 // HOST: Room created
 socket.on('room_created', (code) => {
     isHost = true;
@@ -333,11 +412,12 @@ socket.on('buzzer_state', (data) => {
 
 // EVERYONE: Points Leaderboard Update
 socket.on('points_update', (teamsWithPoints) => {
+    connectedTeams = teamsWithPoints; // Store for host
     if (isHost) {
-        connectedTeams = teamsWithPoints;
         renderTeams();
+        renderHostLeaderboard(teamsWithPoints);
     } else {
-        renderPlayerPoints(teamsWithPoints);
+        // Participants don't see points anymore
     }
 });
 
@@ -352,15 +432,10 @@ socket.on('reset', (data) => {
 // HOST / PLAYER: Room closed with Final Results
 socket.on('room_closed', (results) => {
     releaseImmersiveMode();
-    
+
     if (results && (results.teams || results.disqualified)) {
         lastGlobalResults = results;
-        if (isHost) {
-            renderFinalLeaderboard(results);
-            showToast('Quiz Ended. Final results are ready below.', 'success');
-        } else {
-            if (playerEndedModal) playerEndedModal.classList.remove('hidden');
-        }
+        renderFinalLeaderboard(results);
     } else {
         showToast('Room was closed by the host', 'error');
         setTimeout(() => {
@@ -370,30 +445,32 @@ socket.on('room_closed', (results) => {
 });
 
 function renderFinalLeaderboard(results) {
-    if (!leaderboardContainer || !hostFinalResults) return;
+    if (!leaderboardContainer || !leaderboardModal) return;
 
     leaderboardContainer.innerHTML = '';
-    hostFinalResults.classList.remove('hidden');
-    
+
     // Sort teams by points
     const sortedTeams = [...results.teams].sort((a, b) => b.points - a.points);
-    
+
     let html = `
-        <div style="margin-bottom: 1rem; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 1rem;">
-            <p style="font-size: 1rem; color: var(--text-secondary);">Room Code: <strong style="color:var(--primary-color)">${results.code}</strong> | Date: ${new Date().toLocaleString()}</p>
+        <div style="margin-bottom: 2rem;">
+            <p style="font-size: 1.1rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Room Code: <strong style="color:var(--primary-color)">${results.code}</strong></p>
+            <p style="font-size: 0.9rem; color: var(--text-secondary);">Date: ${new Date().toLocaleString()}</p>
         </div>
-        <div style="display:flex; flex-direction:column; gap: 0.6rem;">
+        
+        <h4 style="margin-bottom: 1rem; color: var(--success); border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem;">Final Standings</h4>
+        <div style="display:flex; flex-direction:column; gap: 0.8rem; margin-bottom: 2rem;">
     `;
 
     sortedTeams.forEach((team, index) => {
         const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`;
         html += `
-            <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.05); padding: 0.8rem 1.2rem; border-radius: 8px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.05); padding: 1rem; border-radius: 8px;">
                 <div style="display:flex; align-items:center; gap: 1rem;">
-                    <span style="font-weight: 800; font-size: 1.1rem; min-width: 30px; color:var(--primary-color)">${medal}</span>
-                    <span style="flex:1; font-weight: 600;">${team.name}</span>
+                    <span style="font-weight: 800; font-size: 1.2rem; min-width: 30px; color:var(--primary-color)">${medal}</span>
+                    <span style="font-weight: 600;">${team.name}</span>
                 </div>
-                <span style="font-weight: 800; color: var(--success); font-size: 1rem;">${team.points} pts</span>
+                <span style="font-weight: 800; color: var(--success); font-size: 1.1rem;">${team.points} pts</span>
             </div>
         `;
     });
@@ -402,19 +479,17 @@ function renderFinalLeaderboard(results) {
 
     if (results.disqualified && results.disqualified.length > 0) {
         html += `
-            <h4 style="margin-top: 2rem; margin-bottom: 1rem; color: var(--danger); border-bottom: 1px solid rgba(239, 68, 68, 0.2); padding-bottom: 0.5rem;">Disqualified Teams</h4>
+            <h4 style="margin-bottom: 1rem; color: var(--danger); border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem;">Disqualified Teams</h4>
             <div style="display:flex; flex-wrap:wrap; gap: 0.5rem;">
         `;
         results.disqualified.forEach(name => {
-            html += `<span style="background:rgba(239, 68, 68, 0.1); color:#ef4444; padding: 0.4rem 0.8rem; border-radius: 20px; font-size: 0.8rem; border: 1px solid rgba(239, 68, 68, 0.2);">❌ ${name}</span>`;
+            html += `<span style="background:rgba(239, 68, 68, 0.1); color:#ef4444; padding: 0.4rem 0.8rem; border-radius: 20px; font-size: 0.85rem; border: 1px solid rgba(239, 68, 68, 0.2);">❌ ${name}</span>`;
         });
         html += `</div>`;
     }
 
     leaderboardContainer.innerHTML = html;
-    
-    // Scroll to results
-    hostFinalResults.scrollIntoView({ behavior: 'smooth' });
+    leaderboardModal.classList.remove('hidden');
 }
 
 if (btnDownloadPdf) {
@@ -422,77 +497,6 @@ if (btnDownloadPdf) {
         if (!lastGlobalResults) return;
         generatePDF(lastGlobalResults);
     });
-}
-
-if (btnCopyImage) {
-    btnCopyImage.addEventListener('click', async () => {
-        if (!lastGlobalResults) return;
-        copyLeaderboardAsImage(lastGlobalResults);
-    });
-}
-
-async function copyLeaderboardAsImage(results) {
-    if (!exportContainer || !exportCol1 || !exportCol2 || !exportRoomInfo || !exportDisqualified) return;
-    
-    showToast('Preparing image...', 'info');
-    
-    // Setup Export DOM
-    exportRoomInfo.textContent = `Room: ${results.code} | Date: ${new Date().toLocaleString()}`;
-    exportCol1.innerHTML = '';
-    exportCol2.innerHTML = '';
-    exportDisqualified.innerHTML = '';
-    
-    const sorted = [...results.teams].sort((a, b) => b.points - a.points);
-    const midPoint = Math.ceil(sorted.length / 2);
-    
-    const renderPill = (team, index) => {
-        const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`;
-        return `
-            <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.05); padding: 12px 20px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
-                <span style="font-weight: 800; color: #00f3ff; width: 40px;">${medal}</span>
-                <span style="flex:1; font-weight: 600;">${team.name}</span>
-                <span style="font-weight: 800; color: #10b981;">${team.points}</span>
-            </div>
-        `;
-    };
-
-    sorted.forEach((team, index) => {
-        if (index < midPoint) {
-            exportCol1.innerHTML += renderPill(team, index);
-        } else {
-            exportCol2.innerHTML += renderPill(team, index);
-        }
-    });
-
-    if (results.disqualified && results.disqualified.length > 0) {
-        exportDisqualified.innerHTML = `
-            <h3 style="color:#ef4444; margin-bottom: 15px;">Disqualified Teams</h3>
-            <div style="display:flex; flex-wrap:wrap; gap: 10px;">
-                ${results.disqualified.map(name => `<span style="background:rgba(239, 68, 68, 0.1); color:#ef4444; padding: 5px 15px; border-radius: 20px; border: 1px solid rgba(239, 68, 68, 0.3);">❌ ${name}</span>`).join('')}
-            </div>
-        `;
-    }
-
-    try {
-        const canvas = await html2canvas(exportContainer, {
-            backgroundColor: '#0f172a',
-            scale: 2
-        });
-        
-        canvas.toBlob(async (blob) => {
-            try {
-                const item = new ClipboardItem({ "image/png": blob });
-                await navigator.clipboard.write([item]);
-                showToast('Leaderboard image copied to clipboard!', 'success');
-            } catch (err) {
-                console.error(err);
-                showToast('Clipboard access denied. Try downloading PDF.', 'error');
-            }
-        });
-    } catch (err) {
-        console.error(err);
-        showToast('Failed to generate image.', 'error');
-    }
 }
 
 async function generatePDF(results) {
@@ -584,10 +588,9 @@ socket.on('group_left', (data) => {
     showToast(`${data.name} left the room`, 'warning');
 });
 
-// HOST: Buzz updates (Array of { socketId, name, timestamp })
+// EVERYONE: Buzz updates
 socket.on('buzzes_update', (buzzes) => {
-    if (!isHost) return;
-    renderBuzzes(buzzes);
+    renderBuzzesView(buzzes);
 });
 
 // HOST: Disqualified updates
@@ -840,9 +843,21 @@ if (btnCancelDisqualify) {
     });
 }
 
-function renderBuzzes(buzzes) {
+function renderBuzzesView(buzzes) {
+    // Render for Host main list
+    if (isHost) {
+        renderBuzzesList(buzzes, buzzesList);
+    } 
+    
+    // Render for Player view (top list)
+    renderBuzzesList(buzzes, playerBuzzesList);
+}
+
+function renderBuzzesList(buzzes, container) {
+    if (!container) return;
+    
     if (buzzes.length === 0) {
-        buzzesList.innerHTML = `
+        container.innerHTML = `
             <div class="empty-state large">
                 <div class="icon-pulse">🔔</div>
                 <p>Waiting for buzzes...</p>
@@ -850,7 +865,7 @@ function renderBuzzes(buzzes) {
         return;
     }
 
-    buzzesList.innerHTML = '';
+    container.innerHTML = '';
     buzzes.forEach((buzz, index) => {
         const li = document.createElement('li');
         li.className = 'buzz-item';
@@ -864,7 +879,7 @@ function renderBuzzes(buzzes) {
             <span class="time-diff" style="font-family:monospace; font-size:0.75rem; color:var(--primary-color); opacity:0.8;">${buzz.timeStr}</span>
         `;
 
-        buzzesList.appendChild(li);
+        container.appendChild(li);
     });
 }
 
@@ -896,24 +911,32 @@ function setPlayerBuzzerState(state, rank = null) {
     }
 }
 
-function renderPlayerPoints(teamsWithPoints) {
-    if (!playerPointsList) return;
+function renderHostLeaderboard(teamsWithPoints) {
+    if (!hostLeaderboardSummary) return;
 
     if (teamsWithPoints.length === 0) {
-        playerPointsList.innerHTML = `<span class="empty-state">Waiting for scores...</span>`;
+        hostLeaderboardSummary.innerHTML = `<span class="empty-state">No teams yet</span>`;
         return;
     }
 
-    // Sort descending by points
     const sorted = [...teamsWithPoints].sort((a, b) => b.points - a.points);
-
-    playerPointsList.innerHTML = '';
+    hostLeaderboardSummary.innerHTML = '';
+    
     sorted.forEach(team => {
         const div = document.createElement('div');
         div.className = 'points-pill';
-        div.innerHTML = `<span>${team.name}</span> <span class="score">${team.points}</span>`;
-        playerPointsList.appendChild(div);
+        div.innerHTML = `
+            <div style="display:flex; justify-content:space-between; width:100%; align-items:center;">
+                <span style="font-weight:600;">${team.name}</span>
+                <span class="score" style="margin-left:1rem;">${team.points}</span>
+            </div>
+        `;
+        hostLeaderboardSummary.appendChild(div);
     });
+}
+
+function renderPlayerPoints(teamsWithPoints) {
+    // This is now disabled for players
 }
 
 function renderDisqualified(disqualified) {
