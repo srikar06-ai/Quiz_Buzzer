@@ -433,14 +433,14 @@ socket.on('reset', (data) => {
 socket.on('room_closed', (results) => {
     releaseImmersiveMode();
 
-    if (results && (results.teams || results.disqualified)) {
+    if (isHost && results && (results.teams || results.disqualified)) {
         lastGlobalResults = results;
         renderFinalLeaderboard(results);
     } else {
-        showToast('Room was closed by the host', 'error');
+        showToast('The Host has ended the quiz.', 'error');
         setTimeout(() => {
             window.location.reload();
-        }, 2000);
+        }, 3000);
     }
 });
 
