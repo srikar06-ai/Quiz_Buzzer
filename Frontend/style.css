@@ -323,15 +323,31 @@ input:focus {
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    transition: all 0.2s ease;
 }
 
-.teams-list li::before {
-    content: '';
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--success);
+.teams-list li:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.warning-btn {
+    background: #f59e0b;
+    color: white;
+}
+
+.danger-btn {
+    background: #ef4444;
+    color: white;
+}
+
+.primary-btn {
+    background: var(--primary-color);
+    color: var(--bg-color);
+}
+
+.secondary-btn {
+    background: var(--secondary);
+    color: white;
 }
 
 .pt-controls {

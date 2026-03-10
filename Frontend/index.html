@@ -193,7 +193,20 @@
         </div>
     </div>
 
-    <!-- Host Alert Modal -->
+    <div id="host-confirm-modal" class="modal-overlay hidden">
+        <div class="modal-content danger-glow">
+            <h2 style="color:#ef4444">⚠️ CONFIRM DISQUALIFY</h2>
+            <p id="disqualify-msg" style="margin-top:1rem;">Are you sure you want to disqualify this team?</p>
+            <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 1rem;">The room is currently
+                <strong>FROZEN</strong> for all participants.</p>
+            <div class="modal-actions">
+                <button id="btn-confirm-disqualify" class="btn danger-btn">Yes, Disqualify</button>
+                <button id="btn-cancel-disqualify" class="btn secondary-btn">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Host Alert Modal (Tab Switch) -->
     <div id="host-alert-modal" class="modal-overlay hidden">
         <div class="modal-content danger-glow" style="width: 500px;">
             <h2>🚨 TAB SWITCH DETECTED</h2>

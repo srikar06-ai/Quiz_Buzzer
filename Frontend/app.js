@@ -47,7 +47,14 @@ const requestsList = document.getElementById('requests-list');
 const btnEndQuiz = document.getElementById('btn-end-quiz');
 const waitingModal = document.getElementById('waiting-modal');
 
+// Host Confirm Modal
+const hostConfirmModal = document.getElementById('host-confirm-modal');
+const disqualifyMsg = document.getElementById('disqualify-msg');
+const btnConfirmDisqualify = document.getElementById('btn-confirm-disqualify');
+const btnCancelDisqualify = document.getElementById('btn-cancel-disqualify');
+
 // State
+let pendingDisqualifySocketId = null;
 let currentRoomCode = '';
 let currentGroupName = '';
 let isHost = false;
@@ -172,7 +179,7 @@ socket.on('error', (msg) => {
 });
 
 // Fullscreen & Wake Lock Helpers
-window.requestFullScreen = async function() {
+window.requestFullScreen = async function () {
     try {
         if (!document.fullscreenElement && !document.webkitFullscreenElement) {
             if (document.documentElement.requestFullscreen) {
@@ -185,7 +192,7 @@ window.requestFullScreen = async function() {
         if ('wakeLock' in navigator) {
             wakeLock = await navigator.wakeLock.request('screen');
         }
-    } catch (e) { 
+    } catch (e) {
         console.log("Immersive mode blocked:", e);
         showToast('Please tap "Go Fullscreen" to enable protections', 'info');
     }
@@ -377,6 +384,29 @@ socket.on('manual_freeze_status', ({ freeze }) => {
     }
 });
 
+// HOST: Disqualified updates
+socket.on('disqualified_update', (disqualified) => {
+    if (!isHost) return;
+    renderDisqualified(disqualified);
+});
+
+// HOST: Disqualified updates (on reconnect or room load if needed)
+function renderDisqualified(disqualified) {
+    if (!disqualifiedList) return;
+    disqualifiedList.innerHTML = '';
+    if (disqualified.length === 0) {
+        disqualifiedList.innerHTML = '<li class="empty-state">No disqualified players</li>';
+        return;
+    }
+    disqualified.forEach(name => {
+        const li = document.createElement('li');
+        li.className = 'team-item';
+        li.style = 'background:rgba(239, 68, 68, 0.1); border-left: 3px solid #ef4444;';
+        li.innerHTML = `<span style="color:#ef4444">❌ ${name}</span>`;
+        disqualifiedList.appendChild(li);
+    });
+}
+
 // TAB VIOLATION LOGIC
 let lastViolatorSocketId = null;
 
@@ -524,14 +554,53 @@ function renderTeams() {
         const li = document.createElement('li');
         const points = team.points || 0;
         li.innerHTML = `
-            <span>${team.name}</span>
-            <div class="pt-controls">
-                <button class="pt-btn" onclick="updatePoints('${team.socketId}', -10)">-</button>
-                <div class="pt-score">${points}</div>
-                <button class="pt-btn" onclick="updatePoints('${team.socketId}', 10)">+</button>
+            <div style="display:flex; justify-content:space-between; align-items:center; width:100%;">
+                <div style="display:flex; align-items:center; gap:0.5rem;">
+                    <button class="btn warning-btn" style="padding:0.3rem 0.5rem; font-size:0.7rem; background:#ef4444;" onclick="requestDisqualify('${team.socketId}', '${team.name}')">❌</button>
+                    <span>${team.name}</span>
+                </div>
+                <div class="pt-controls">
+                    <button class="pt-btn" onclick="updatePoints('${team.socketId}', -10)">-</button>
+                    <div class="pt-score">${points}</div>
+                    <button class="pt-btn" onclick="updatePoints('${team.socketId}', 10)">+</button>
+                </div>
             </div>
         `;
         teamsList.appendChild(li);
+    });
+}
+
+// Host: Manual Disqualify Flow
+window.requestDisqualify = (socketId, name) => {
+    pendingDisqualifySocketId = socketId;
+    if (disqualifyMsg) disqualifyMsg.innerHTML = `Are you sure you want to disqualify <strong>'${name}'</strong>?`;
+
+    // Freeze room while host decides
+    socket.emit('toggle_manual_freeze', { code: currentRoomCode, freeze: true });
+
+    if (hostConfirmModal) hostConfirmModal.classList.remove('hidden');
+};
+
+if (btnConfirmDisqualify) {
+    btnConfirmDisqualify.addEventListener('click', () => {
+        if (pendingDisqualifySocketId) {
+            socket.emit('resolve_violation', {
+                code: currentRoomCode,
+                targetSocketId: pendingDisqualifySocketId,
+                action: 'disqualify'
+            });
+        }
+        socket.emit('toggle_manual_freeze', { code: currentRoomCode, freeze: false });
+        if (hostConfirmModal) hostConfirmModal.classList.add('hidden');
+        pendingDisqualifySocketId = null;
+    });
+}
+
+if (btnCancelDisqualify) {
+    btnCancelDisqualify.addEventListener('click', () => {
+        socket.emit('toggle_manual_freeze', { code: currentRoomCode, freeze: false });
+        if (hostConfirmModal) hostConfirmModal.classList.add('hidden');
+        pendingDisqualifySocketId = null;
     });
 }
 
