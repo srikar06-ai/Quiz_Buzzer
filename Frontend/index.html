@@ -4,12 +4,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Quiz Buzzer System</title>
+    <title>Quiz Buzzer - TECHSPARK 2K26</title>
     <!-- Fonts -->
     <link
-        href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=Inter:wght@400;500;700&display=swap"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap"
         rel="stylesheet">
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=3">
 </head>
 
 <body>
@@ -138,8 +138,8 @@
                                 style="font-size:0.5rem; background:none; border:1px solid var(--text-secondary); color:var(--text-secondary); border-radius:4px; margin-top:0.2rem; cursor:pointer;">⛶
                                 Go Immersive</button>
                         </div>
-                        <div style="text-align:right;">
-                            <!-- Removed LIVE status as per user request -->
+                        <div id="player-status-container" style="text-align:right;">
+                            <!-- Status section removed permanently -->
                         </div>
                     </div>
 
@@ -268,7 +268,18 @@
     <script src="/socket.io/socket.io.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-    <script src="app.js"></script>
+    <script src="app.js?v=3"></script>
+    
+    <script>
+        // Force hide elements as an extra safety measure against cache
+        document.addEventListener('DOMContentLoaded', () => {
+            const statusContainer = document.getElementById('player-status-container');
+            if (statusContainer) statusContainer.innerHTML = '';
+            
+            // Log to confirm this version is active
+            console.log("QUIZ BUZZER V3 - UPDATED UI");
+        });
+    </script>
 </body>
 
 </html>

@@ -393,6 +393,7 @@ socket.on('joined_room', (data) => {
     }
 
     switchView('player');
+    isHost = false; // Explicitly ensure NOT a host on player join
     requestFullScreen();
     showToast('Joined Room!', 'success');
 });
@@ -432,11 +433,15 @@ socket.on('reset', (data) => {
 // HOST / PLAYER: Room closed with Final Results
 socket.on('room_closed', (results) => {
     releaseImmersiveMode();
+    console.log("Room closed received. results:", !!results, "isHost:", isHost);
 
     if (isHost && results && (results.teams || results.disqualified)) {
+        console.log("I am Host - showing leaderboard modal.");
         lastGlobalResults = results;
         renderFinalLeaderboard(results);
     } else {
+        console.log("I am Participant - hiding leaderboard and resetting.");
+        if (leaderboardModal) leaderboardModal.classList.add('hidden');
         showToast('The Host has ended the quiz.', 'error');
         setTimeout(() => {
             window.location.reload();
