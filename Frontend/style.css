@@ -17,6 +17,10 @@
     font-family: 'Inter', sans-serif;
 }
 
+.hidden {
+    display: none !important;
+}
+
 /* Loader */
 .loader {
     width: 48px;
