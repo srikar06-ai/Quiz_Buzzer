@@ -11,7 +11,7 @@ app.use(cors());
 const startHrTime = process.hrtime.bigint();
 const startDate = Date.now();
 
-function getNanosecondTime() {
+function getMicrosecondTime() {
     const currentHr = process.hrtime.bigint();
     const elapsedNano = currentHr - startHrTime;
     const currentTotalNano = (BigInt(startDate) * 1000000n) + elapsedNano;
@@ -20,9 +20,9 @@ function getNanosecondTime() {
     const h = String(date.getHours()).padStart(2, '0');
     const m = String(date.getMinutes()).padStart(2, '0');
     const s = String(date.getSeconds()).padStart(2, '0');
-    const nano = String(currentTotalNano % 1000000000n).padStart(9, '0');
+    const micro = String((currentTotalNano % 1000000000n) / 1000n).padStart(6, '0');
 
-    return `${h}:${m}:${s}.${nano}`;
+    return `${h}:${m}:${s}.${micro}`;
 }
 
 // Serve static files from the Frontend directory
@@ -178,7 +178,7 @@ io.on('connection', (socket) => {
         const buzzData = {
             socketId: socket.id,
             name: name,
-            timeStr: getNanosecondTime()
+            timeStr: getMicrosecondTime()
         };
 
         room.buzzes.push(buzzData);
