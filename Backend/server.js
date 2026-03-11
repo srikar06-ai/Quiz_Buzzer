@@ -14,12 +14,15 @@ const startDate = Date.now();
 function getMicrosecondTime() {
     const currentHr = process.hrtime.bigint();
     const elapsedNano = currentHr - startHrTime;
-    const currentTotalNano = (BigInt(startDate) * 1000000n) + elapsedNano;
+    
+    // Add IST Offset (UTC + 5:30)
+    const istOffsetMs = (5 * 60 + 30) * 60 * 1000;
+    const currentTotalNano = (BigInt(startDate + istOffsetMs) * 1000000n) + elapsedNano;
 
     const date = new Date(Number(currentTotalNano / 1000000n));
-    const h = String(date.getHours()).padStart(2, '0');
-    const m = String(date.getMinutes()).padStart(2, '0');
-    const s = String(date.getSeconds()).padStart(2, '0');
+    const h = String(date.getUTCHours()).padStart(2, '0');
+    const m = String(date.getUTCMinutes()).padStart(2, '0');
+    const s = String(date.getUTCSeconds()).padStart(2, '0');
     
     const totalMicros = (currentTotalNano % 1000000000n) / 1000n;
     const millis = String(totalMicros / 1000n).padStart(3, '0');
