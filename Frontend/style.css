@@ -373,6 +373,26 @@ input:focus {
     color: var(--bg-color);
 }
 
+.quick-pt-btn {
+    background: rgba(0, 243, 255, 0.1);
+    border: 1px solid var(--border-color);
+    color: white;
+    padding: 0.2rem 0.6rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.7rem;
+    line-height: 1.2;
+    text-align: center;
+    transition: all 0.2s ease;
+    min-width: 60px;
+}
+
+.quick-pt-btn:hover {
+    background: var(--primary-color);
+    color: var(--bg-color);
+    transform: translateY(-2px);
+}
+
 .pt-score {
     font-family: 'Outfit', sans-serif;
     font-size: 1.2rem;

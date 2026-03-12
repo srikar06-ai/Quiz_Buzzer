@@ -804,9 +804,11 @@ function renderTeams() {
                     <span>${team.name}</span>
                 </div>
                 <div class="pt-controls">
-                    <button class="pt-btn" onclick="updatePoints('${team.socketId}', -10)">-</button>
+                    <button class="pt-btn" onclick="updatePoints('${team.socketId}', -1)">-</button>
                     <div class="pt-score">${points}</div>
-                    <button class="pt-btn" onclick="updatePoints('${team.socketId}', 10)">+</button>
+                    <button class="quick-pt-btn" onclick="updatePoints('${team.socketId}', 10)">+10<br><span style="font-size:0.6rem;opacity:0.8;">(No pass)</span></button>
+                    <button class="quick-pt-btn" onclick="updatePoints('${team.socketId}', 7)">+7<br><span style="font-size:0.6rem;opacity:0.8;">(1st pass)</span></button>
+                    <button class="quick-pt-btn" onclick="updatePoints('${team.socketId}', 4)">+4<br><span style="font-size:0.6rem;opacity:0.8;">(Second pass)</span></button>
                 </div>
             </div>
         `;
