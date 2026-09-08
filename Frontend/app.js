@@ -40,6 +40,7 @@ const btnWarningLeave = document.getElementById('btn-warning-leave');
 const freezeModal = document.getElementById('freeze-modal');
 const disqualifiedModal = document.getElementById('disqualified-modal');
 const globalFreezeText = document.getElementById('global-freeze-text');
+const fullscreenLockStatus = document.getElementById('fullscreen-lock-status');
 
 // Host Modal Elements
 const hostAlertModal = document.getElementById('host-alert-modal');
@@ -58,7 +59,16 @@ const disqualifyMsg = document.getElementById('disqualify-msg');
 const btnConfirmDisqualify = document.getElementById('btn-confirm-disqualify');
 const btnCancelDisqualify = document.getElementById('btn-cancel-disqualify');
 
-// State
+// State Machine & Lock Controls
+const PLAYER_STATE = {
+    NORMAL: 'NORMAL',
+    VIOLATION: 'VIOLATION',
+    WAITING_REENTRY: 'WAITING_REENTRY',
+    RESTORED: 'RESTORED'
+};
+let playerState = PLAYER_STATE.NORMAL;
+let isQuizLocked = false;
+
 let lastGlobalResults = null;
 let pendingDisqualifySocketId = null;
 let currentRoomCode = '';
@@ -152,6 +162,13 @@ btnJoinRoom.addEventListener('click', () => {
 });
 
 buzzerBtn.addEventListener('click', () => {
+    // SERVER & FRONTEND LOCK PROTECTION: Block click if outside fullscreen or locked
+    if (!isHost && (!isFullscreenActive() || isQuizLocked)) {
+        showToast('You must restore Fullscreen before buzzing!', 'error');
+        lockQuizUI();
+        return;
+    }
+
     // Only buzz if it is active (not buzzed and buzzers allowed)
     if (buzzerBtn.classList.contains('active')) {
         // Optimistic UI update
@@ -429,6 +446,12 @@ socket.on('buzz_registered', (data) => {
     setPlayerBuzzerState('buzzed', data.rank);
 });
 
+// PLAYER: Server-side Buzz Rejection (DevTools or UI bypass prevention)
+socket.on('buzz_rejected', (data) => {
+    showToast(data.message || 'Buzz rejected: Fullscreen required!', 'error');
+    lockQuizUI();
+});
+
 // EVERYONE: Buzzers active/inactive toggle
 socket.on('buzzer_state', (data) => {
     isBuzzerActive = data.active;
@@ -676,12 +699,46 @@ function renderDisqualified(disqualified) {
     });
 }
 
-// ADVANCED ANTI-CHEATING MONITORING ENGINE
+// ADVANCED ANTI-CHEATING MONITORING ENGINE & LOCK STATE MACHINE
 let lastViolationTime = 0;
 const VIOLATION_COOLDOWN_MS = 1500; // Deduplication cooldown window (1.5s)
 
 function isFullscreenActive() {
     return !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement);
+}
+
+function lockQuizUI() {
+    if (isHost) return;
+    isQuizLocked = true;
+    if (buzzerBtn) {
+        buzzerBtn.classList.add('disabled');
+        buzzerBtn.classList.remove('active', 'pressed');
+    }
+    if (redWarningModal) redWarningModal.classList.remove('hidden');
+    if (fullscreenLockStatus) {
+        fullscreenLockStatus.innerHTML = 'Fullscreen status: ❌ Outside Fullscreen (Quiz Locked)';
+        fullscreenLockStatus.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+        fullscreenLockStatus.style.color = '#ef4444';
+    }
+}
+
+function unlockQuizUI() {
+    // STRICT VERIFICATION: Do NOT unlock unless browser confirms document.fullscreenElement is active
+    if (!isFullscreenActive()) {
+        lockQuizUI();
+        return;
+    }
+
+    isQuizLocked = false;
+    if (redWarningModal) redWarningModal.classList.add('hidden');
+    if (fullscreenLockStatus) {
+        fullscreenLockStatus.innerHTML = 'Fullscreen status: 🔒 Verified Fullscreen';
+        fullscreenLockStatus.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+        fullscreenLockStatus.style.color = '#10b981';
+    }
+    if (isBuzzerActive) {
+        setPlayerBuzzerState('active');
+    }
 }
 
 function sendViolation(type, details = '') {
@@ -695,7 +752,7 @@ function sendViolation(type, details = '') {
     const visibilityState = document.visibilityState || 'visible';
     const hasFocus = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
 
-    if (redWarningModal) redWarningModal.classList.remove('hidden');
+    lockQuizUI();
 
     socket.emit('tab_violation', {
         code: currentRoomCode,
@@ -709,11 +766,24 @@ function sendViolation(type, details = '') {
     });
 }
 
-// 1. Fullscreen Change & Exit Listening
+// 1. Fullscreen Change & Exit Listening with Verified State Machine
 const handleFullscreenChange = () => {
     if (isHost || !currentRoomCode) return;
-    if (!isFullscreenActive()) {
+    const active = isFullscreenActive();
+    if (!active) {
+        playerState = PLAYER_STATE.VIOLATION;
+        lockQuizUI();
         sendViolation('FULLSCREEN_EXIT', 'Exited immersive fullscreen mode');
+    } else {
+        if (playerState === PLAYER_STATE.WAITING_REENTRY || playerState === PLAYER_STATE.VIOLATION) {
+            playerState = PLAYER_STATE.RESTORED;
+            socket.emit('participant_returned', { code: currentRoomCode, fullscreen: true });
+            unlockQuizUI();
+            playerState = PLAYER_STATE.NORMAL;
+            showToast('Fullscreen verified & restored! Quiz unlocked.', 'success');
+        } else {
+            unlockQuizUI();
+        }
     }
 };
 
@@ -722,19 +792,27 @@ document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
 document.addEventListener('mozfullscreenchange', handleFullscreenChange);
 document.addEventListener('MSFullscreenChange', handleFullscreenChange);
 
-document.addEventListener('fullscreenerror', () => sendViolation('FULLSCREEN_ERROR', 'Fullscreen error encountered'));
-document.addEventListener('webkitfullscreenerror', () => sendViolation('FULLSCREEN_ERROR', 'Fullscreen error encountered'));
+document.addEventListener('fullscreenerror', () => {
+    lockQuizUI();
+    sendViolation('FULLSCREEN_ERROR', 'Fullscreen error encountered');
+});
+document.addEventListener('webkitfullscreenerror', () => {
+    lockQuizUI();
+    sendViolation('FULLSCREEN_ERROR', 'Fullscreen error encountered');
+});
 
 // 2. Visibility Change
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
+        lockQuizUI();
         sendViolation('TAB_SWITCH', 'Switched browser tab or minimized application');
     }
 });
 
-// 3. Window Blur / System UI Detection (e.g. Notification Panel Pull-down)
+// 3. Window Blur / System UI Detection
 window.addEventListener('blur', () => {
     if (isHost || !currentRoomCode) return;
+    lockQuizUI();
     const isVisible = document.visibilityState === 'visible';
     if (isVisible) {
         sendViolation('SUSPICIOUS_SYSTEM_UI', 'Window lost focus while page remained visible (notification panel or app overlay)');
@@ -745,10 +823,11 @@ window.addEventListener('blur', () => {
 
 // 4. Page Hide
 window.addEventListener('pagehide', () => {
+    lockQuizUI();
     sendViolation('PAGE_HIDDEN', 'Page hidden or browser context changed');
 });
 
-// 5. Shortcut Blocking (Aggressive)
+// 5. Shortcut Blocking
 document.addEventListener('keydown', (e) => {
     if (isHost) return;
 
@@ -759,7 +838,7 @@ document.addEventListener('keydown', (e) => {
 
     if (e.key === 'Escape') {
         e.preventDefault();
-        handleParticipantReEntry();
+        lockQuizUI();
     }
 });
 
@@ -768,7 +847,7 @@ document.addEventListener('contextmenu', (e) => {
     if (!isHost) e.preventDefault();
 });
 
-// 6. Periodic Lightweight Participant Heartbeat (Every 4s)
+// 6. Periodic Lightweight Participant Heartbeat Loop (Every 4s)
 setInterval(() => {
     if (!isHost && currentRoomCode && currentGroupName) {
         socket.emit('participant_heartbeat', {
@@ -782,17 +861,28 @@ setInterval(() => {
     }
 }, 4000);
 
-// Participant Re-Entry Handler
-async function handleParticipantReEntry() {
-    if (redWarningModal) redWarningModal.classList.add('hidden');
-    await requestFullScreen();
-    if (currentRoomCode) {
-        socket.emit('participant_returned', { code: currentRoomCode });
-    }
-}
-
+// Participant Re-Entry Button Handler (Requests Fullscreen but waits for fullscreenchange verification)
 if (btnWarningStay) {
-    btnWarningStay.addEventListener('click', handleParticipantReEntry);
+    btnWarningStay.addEventListener('click', async () => {
+        playerState = PLAYER_STATE.WAITING_REENTRY;
+        if (fullscreenLockStatus) {
+            fullscreenLockStatus.innerHTML = 'Fullscreen status: ⏳ Requesting Fullscreen...';
+            fullscreenLockStatus.style.borderColor = 'rgba(245, 158, 11, 0.5)';
+            fullscreenLockStatus.style.color = '#f59e0b';
+        }
+        try {
+            await requestFullScreen();
+            // NOTE: DO NOT UNLOCK HERE! We wait for the browser's fullscreenchange event to verify document.fullscreenElement !== null!
+        } catch (err) {
+            console.log("Fullscreen request rejected/failed:", err);
+            if (fullscreenLockStatus) {
+                fullscreenLockStatus.innerHTML = 'Fullscreen status: ❌ Request Rejected by Browser. Tap button again.';
+                fullscreenLockStatus.style.borderColor = 'rgba(239, 68, 68, 0.5)';
+                fullscreenLockStatus.style.color = '#ef4444';
+            }
+            showToast('Fullscreen request rejected by browser. Please tap again.', 'error');
+        }
+    });
 }
 
 // Global Freeze Listener
