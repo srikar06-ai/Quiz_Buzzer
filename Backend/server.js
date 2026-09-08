@@ -222,14 +222,17 @@ io.on('connection', (socket) => {
         if (!room || room.host !== socket.id) return;
 
         room.buzzes = [];
-        room.buzzesAllowed = true;
+        room.buzzesAllowed = false; // Reset puts buzzers into OFF mode
 
         // Notify all to clear their buzzer lists
         io.to(code).emit('buzzes_update', room.buzzes);
 
+        // Broadcast buzzer state turned OFF to all
+        io.to(code).emit('buzzer_state', { active: false });
+
         // Notify all groups to reset their buzzer UI
-        io.to(code).emit('reset', { buzzesAllowed: true });
-        console.log(`Buzzers reset for room ${code}`);
+        io.to(code).emit('reset', { buzzesAllowed: false });
+        console.log(`Buzzers reset to OFF for room ${code}`);
     });
 
     // Host toggles buzzers

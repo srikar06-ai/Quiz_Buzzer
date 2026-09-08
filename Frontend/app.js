@@ -166,8 +166,8 @@ buzzerBtn.addEventListener('click', () => {
 
 btnResetBuzzers.addEventListener('click', () => {
     socket.emit('reset_buzzers', currentRoomCode);
-    isBuzzerActive = true;
-    if (btnToggleBuzzers) btnToggleBuzzers.textContent = 'Disable Buzzers';
+    isBuzzerActive = false;
+    if (btnToggleBuzzers) btnToggleBuzzers.textContent = 'Enable Buzzers';
 });
 
 if (btnToggleBuzzers) {
@@ -456,6 +456,9 @@ socket.on('reset', (data) => {
     if (data.buzzesAllowed) {
         setPlayerBuzzerState('active');
         showToast('Buzzers Reset! Get Ready.', 'info');
+    } else {
+        setPlayerBuzzerState('disabled');
+        showToast('Buzzers Reset (OFF)', 'info');
     }
 });
 
