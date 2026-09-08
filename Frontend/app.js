@@ -119,6 +119,18 @@ btnCreateRoom.addEventListener('click', () => {
     socket.emit('create_room');
 });
 
+inputRoomCode.addEventListener('input', () => {
+    inputRoomCode.value = inputRoomCode.value.toUpperCase();
+});
+
+inputRoomCode.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') btnJoinRoom.click();
+});
+
+inputGroupName.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') btnJoinRoom.click();
+});
+
 btnJoinRoom.addEventListener('click', () => {
     const code = inputRoomCode.value.trim().toUpperCase();
     const name = inputGroupName.value.trim();
@@ -295,11 +307,19 @@ if (btnCopyLeaderboard) {
         
         try {
             const canvas = await html2canvas(snapshotContainer);
-            canvas.toBlob(blob => {
-                const item = new ClipboardItem({ "image/png": blob });
-                navigator.clipboard.write([item]).then(() => {
-                    showToast('Leaderboard image copied to clipboard!', 'success');
-                });
+            canvas.toBlob(async blob => {
+                try {
+                    if (navigator.clipboard && window.ClipboardItem) {
+                        const item = new ClipboardItem({ "image/png": blob });
+                        await navigator.clipboard.write([item]);
+                        showToast('Leaderboard image copied to clipboard!', 'success');
+                    } else {
+                        showToast('Clipboard copy not supported in this browser', 'error');
+                    }
+                } catch (clipErr) {
+                    console.error('Clipboard write failed:', clipErr);
+                    showToast('Failed to copy image to clipboard.', 'error');
+                }
             });
         } catch (err) {
             console.error('Snapshot failed:', err);
@@ -331,7 +351,13 @@ function addTeamToSnapshot(parent, team, rank) {
 socket.on('room_created', (code) => {
     isHost = true;
     currentRoomCode = code;
+    connectedTeams = [];
     displayRoomCode.textContent = code;
+    if (buzzesList) buzzesList.innerHTML = '<div class="empty-state large"><div class="icon-pulse">🔔</div><p>Waiting for buzzes...</p></div>';
+    if (hostLeaderboardSummary) hostLeaderboardSummary.innerHTML = '<span class="empty-state">No teams yet</span>';
+    if (disqualifiedList) disqualifiedList.innerHTML = '<li class="empty-state">None yet</li>';
+    if (requestsList) requestsList.innerHTML = '<li class="empty-state">No pending requests</li>';
+    renderTeams();
     switchView('host');
     showToast('Room created successfully', 'success');
 });
@@ -405,7 +431,10 @@ socket.on('buzz_registered', (data) => {
 
 // EVERYONE: Buzzers active/inactive toggle
 socket.on('buzzer_state', (data) => {
-    if (!isHost) {
+    isBuzzerActive = data.active;
+    if (isHost && btnToggleBuzzers) {
+        btnToggleBuzzers.textContent = data.active ? 'Disable Buzzers' : 'Enable Buzzers';
+    } else if (!isHost) {
         if (data.active) setPlayerBuzzerState('active');
         else setPlayerBuzzerState('disabled');
     }
@@ -505,6 +534,10 @@ if (btnDownloadPdf) {
 }
 
 async function generatePDF(results) {
+    if (!window.jspdf || !window.jspdf.jsPDF) {
+        showToast('PDF library not loaded. Please check your network connection.', 'error');
+        return;
+    }
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF();
 
@@ -624,18 +657,11 @@ socket.on('manual_freeze_status', ({ freeze }) => {
     }
 });
 
-// HOST: Disqualified updates
-socket.on('disqualified_update', (disqualified) => {
-    if (!isHost) return;
-    renderDisqualified(disqualified);
-});
-
-// HOST: Disqualified updates (on reconnect or room load if needed)
 function renderDisqualified(disqualified) {
     if (!disqualifiedList) return;
     disqualifiedList.innerHTML = '';
     if (disqualified.length === 0) {
-        disqualifiedList.innerHTML = '<li class="empty-state">No disqualified players</li>';
+        disqualifiedList.innerHTML = '<li class="empty-state">None yet</li>';
         return;
     }
     disqualified.forEach(name => {
@@ -944,20 +970,4 @@ function renderHostLeaderboard(teamsWithPoints) {
 
 function renderPlayerPoints(teamsWithPoints) {
     // This is now disabled for players
-}
-
-function renderDisqualified(disqualified) {
-    if (!disqualifiedList) return;
-    if (disqualified.length === 0) {
-        disqualifiedList.innerHTML = `<li class="empty-state">None yet</li>`;
-        return;
-    }
-
-    disqualifiedList.innerHTML = '';
-    disqualified.forEach(name => {
-        const li = document.createElement('li');
-        li.style.color = '#ef4444';
-        li.textContent = name;
-        disqualifiedList.appendChild(li);
-    });
 }

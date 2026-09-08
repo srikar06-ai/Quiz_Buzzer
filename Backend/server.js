@@ -83,7 +83,16 @@ io.on('connection', (socket) => {
 
     // Group starts joining a room (request)
     socket.on('join_room', ({ code, name }) => {
-        code = code.toUpperCase();
+        if (!code || typeof code !== 'string' || !name || typeof name !== 'string') {
+            socket.emit('error', 'Invalid room code or group name.');
+            return;
+        }
+        code = code.trim().toUpperCase();
+        name = name.trim();
+        if (!code || !name) {
+            socket.emit('error', 'Room code and group name are required.');
+            return;
+        }
         const room = rooms[code];
         if (!room) {
             socket.emit('error', 'Room not found.');
@@ -118,6 +127,7 @@ io.on('connection', (socket) => {
 
     // Host resolves join request
     socket.on('resolve_join', ({ code, targetSocketId, action }) => {
+        if (!code || typeof code !== 'string') return;
         code = code.toUpperCase();
         const room = rooms[code];
         if (!room || room.host !== socket.id) return;
@@ -146,6 +156,7 @@ io.on('connection', (socket) => {
         }
 
         delete room.pendingRequests[targetSocketId];
+        delete room.activeViolations[targetSocketId];
 
         // Check if anything else is keeping the room frozen
         const remainingPending = Object.values(room.pendingRequests);
@@ -157,8 +168,12 @@ io.on('connection', (socket) => {
                 violatorNames: remainingViolating,
                 manualFreeze: room.manualFreeze
             });
+            io.to(room.host).emit('tab_violation_alert', {
+                violations: Object.entries(room.activeViolations).map(([id, name]) => ({ socketId: id, name }))
+            });
         } else {
             io.to(code).emit('violation_resolved', { action: 'join_resolved', targetSocketId });
+            io.to(room.host).emit('tab_violation_alert', { violations: [] });
         }
 
         // Update host requests list
@@ -167,6 +182,7 @@ io.on('connection', (socket) => {
 
     // Group presses the buzzer
     socket.on('buzz', (code) => {
+        if (!code || typeof code !== 'string') return;
         code = code.toUpperCase();
         const room = rooms[code];
         if (!room) return;
@@ -198,6 +214,7 @@ io.on('connection', (socket) => {
 
     // Host resets buzzers
     socket.on('reset_buzzers', (code) => {
+        if (!code || typeof code !== 'string') return;
         code = code.toUpperCase();
         const room = rooms[code];
 
@@ -214,8 +231,10 @@ io.on('connection', (socket) => {
         io.to(code).emit('reset', { buzzesAllowed: true });
         console.log(`Buzzers reset for room ${code}`);
     });
+
     // Host toggles buzzers
     socket.on('toggle_buzzers', ({ code, active }) => {
+        if (!code || typeof code !== 'string') return;
         code = code.toUpperCase();
         const room = rooms[code];
         if (!room || room.host !== socket.id) return;
@@ -223,7 +242,7 @@ io.on('connection', (socket) => {
         room.buzzesAllowed = active;
         if (!active) {
             room.buzzes = []; // optionally clear when disabling
-            socket.emit('buzzes_update', room.buzzes);
+            io.to(code).emit('buzzes_update', room.buzzes);
         }
         io.to(code).emit('buzzer_state', { active });
         console.log(`Buzzers toggled for room ${code}: ${active}`);
@@ -231,6 +250,7 @@ io.on('connection', (socket) => {
 
     // Host toggles manual freeze
     socket.on('toggle_manual_freeze', ({ code, freeze }) => {
+        if (!code || typeof code !== 'string') return;
         code = code.toUpperCase();
         const room = rooms[code];
         if (!room || room.host !== socket.id) return;
@@ -262,18 +282,22 @@ io.on('connection', (socket) => {
 
     // Host updates points
     socket.on('update_points', ({ code, targetSocketId, delta }) => {
+        if (!code || typeof code !== 'string') return;
         code = code.toUpperCase();
         const room = rooms[code];
         if (!room || room.host !== socket.id) return;
 
+        const deltaVal = parseInt(delta, 10);
+        if (isNaN(deltaVal)) return;
+
         if (room.groups[targetSocketId]) {
-            room.groups[targetSocketId].points += parseInt(delta, 10);
+            room.groups[targetSocketId].points += deltaVal;
             io.to(code).emit('points_update', Object.entries(room.groups).map(([id, g]) => ({ socketId: id, name: g.name, points: g.points })));
         }
     });
 
     socket.on('tab_violation', (code) => {
-        if (!code) return;
+        if (!code || typeof code !== 'string') return;
         code = code.toUpperCase();
         const room = rooms[code];
         if (!room) return;
@@ -301,6 +325,7 @@ io.on('connection', (socket) => {
 
     // Host Resolves Violation
     socket.on('resolve_violation', ({ code, targetSocketId, action }) => {
+        if (!code || typeof code !== 'string') return;
         code = code.toUpperCase();
         const room = rooms[code];
         if (!room || room.host !== socket.id) return;
@@ -315,9 +340,9 @@ io.on('connection', (socket) => {
                 // Remove their buzzes
                 room.buzzes = room.buzzes.filter(b => b.socketId !== targetSocketId);
 
-                // Broadcast updates
+                // Broadcast updates to entire room
                 io.to(code).emit('points_update', Object.entries(room.groups).map(([id, g]) => ({ socketId: id, name: g.name, points: g.points })));
-                io.to(room.host).emit('buzzes_update', room.buzzes);
+                io.to(code).emit('buzzes_update', room.buzzes);
                 io.to(room.host).emit('disqualified_update', room.disqualified);
             }
         }
@@ -356,6 +381,7 @@ io.on('connection', (socket) => {
 
     // Host ends quiz manually
     socket.on('room_closed_trigger', (code) => {
+        if (!code || typeof code !== 'string') return;
         code = code.toUpperCase();
         const room = rooms[code];
         if (!room || room.host !== socket.id) return;
@@ -384,47 +410,49 @@ io.on('connection', (socket) => {
                 };
                 io.to(code).emit('room_closed', finalResults);
                 delete rooms[code];
-            } else if (room.groups[socket.id]) {
-                const groupName = room.groups[socket.id].name;
-                delete room.groups[socket.id];
-                room.buzzes = room.buzzes.filter(b => b.socketId !== socket.id);
+            } else {
+                let stateChanged = false;
+
+                if (room.groups[socket.id]) {
+                    const groupName = room.groups[socket.id].name;
+                    delete room.groups[socket.id];
+                    room.buzzes = room.buzzes.filter(b => b.socketId !== socket.id);
+                    stateChanged = true;
+
+                    io.to(room.host).emit('group_left', { socketId: socket.id, name: groupName });
+                    io.to(code).emit('buzzes_update', room.buzzes);
+                    io.to(code).emit('points_update', Object.entries(room.groups).map(([id, g]) => ({ socketId: id, name: g.name, points: g.points })));
+                }
+
+                if (room.pendingRequests[socket.id]) {
+                    delete room.pendingRequests[socket.id];
+                    stateChanged = true;
+                    io.to(room.host).emit('requests_update', Object.entries(room.pendingRequests).map(([id, n]) => ({ socketId: id, name: n })));
+                }
 
                 if (room.activeViolations[socket.id]) {
                     delete room.activeViolations[socket.id];
+                    stateChanged = true;
+                }
+
+                if (stateChanged) {
                     const remainingViolatorNames = Object.values(room.activeViolations);
                     const remainingPendingNames = Object.values(room.pendingRequests);
 
-                    if (remainingViolatorNames.length > 0 || remainingPendingNames.length > 0) {
+                    if (remainingViolatorNames.length > 0 || remainingPendingNames.length > 0 || room.manualFreeze) {
                         io.to(code).emit('global_freeze', {
                             violatorNames: remainingViolatorNames,
-                            pendingNames: remainingPendingNames
-                        });
-                        io.to(room.host).emit('tab_violation_alert', {
-                            violations: Object.entries(room.activeViolations).map(([id, name]) => ({ socketId: id, name }))
+                            pendingNames: remainingPendingNames,
+                            manualFreeze: room.manualFreeze
                         });
                     } else {
                         io.to(code).emit('violation_resolved', { action: 'disconnect', targetSocketId: socket.id });
                     }
-                }
 
-                io.to(room.host).emit('group_left', { socketId: socket.id, name: groupName });
-                io.to(room.host).emit('buzzes_update', room.buzzes);
-                io.to(code).emit('points_update', Object.entries(room.groups).map(([id, g]) => ({ socketId: id, name: g.name, points: g.points })));
-            } else if (room.pendingRequests[socket.id]) {
-                delete room.pendingRequests[socket.id];
-                const remainingViolatorNames = Object.values(room.activeViolations);
-                const remainingPendingNames = Object.values(room.pendingRequests);
-
-                if (remainingViolatorNames.length > 0 || remainingPendingNames.length > 0) {
-                    io.to(code).emit('global_freeze', {
-                        violatorNames: remainingViolatorNames,
-                        pendingNames: remainingPendingNames
+                    io.to(room.host).emit('tab_violation_alert', {
+                        violations: Object.entries(room.activeViolations).map(([id, name]) => ({ socketId: id, name }))
                     });
-                } else {
-                    io.to(code).emit('violation_resolved', { action: 'disconnect', targetSocketId: socket.id });
                 }
-
-                io.to(room.host).emit('requests_update', Object.entries(room.pendingRequests).map(([id, n]) => ({ socketId: id, name: n })));
             }
         }
     });
