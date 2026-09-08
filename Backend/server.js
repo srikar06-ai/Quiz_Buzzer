@@ -299,19 +299,68 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('tab_violation', (code) => {
+    // Participant Heartbeat Handler
+    socket.on('participant_heartbeat', ({ code, groupName, fullscreen, visibilityState, hasFocus }) => {
         if (!code || typeof code !== 'string') return;
         code = code.toUpperCase();
         const room = rooms[code];
         if (!room) return;
 
-        const groupName = room.groups[socket.id] ? room.groups[socket.id].name : room.pendingRequests[socket.id];
+        const group = room.groups[socket.id];
+        if (group) {
+            group.lastHeartbeat = Date.now();
+            group.fullscreen = fullscreen;
+            group.visibilityState = visibilityState;
+            group.hasFocus = hasFocus;
+        }
+    });
+
+    // Participant Returned Handler
+    socket.on('participant_returned', ({ code }) => {
+        if (!code || typeof code !== 'string') return;
+        code = code.toUpperCase();
+        const room = rooms[code];
+        if (!room) return;
+
+        const group = room.groups[socket.id];
+        if (group && room.host) {
+            io.to(room.host).emit('participant_returned_alert', {
+                socketId: socket.id,
+                name: group.name,
+                timestamp: Date.now()
+            });
+        }
+    });
+
+    socket.on('tab_violation', (data) => {
+        if (!data) return;
+        let code = typeof data === 'string' ? data : data.code;
+        if (!code || typeof code !== 'string') return;
+        code = code.toUpperCase();
+        const room = rooms[code];
+        if (!room) return;
+
+        const group = room.groups[socket.id];
+        const groupName = group ? group.name : room.pendingRequests[socket.id];
         if (groupName) {
-            // Track this specific violation
-            room.activeViolations[socket.id] = groupName;
+            const type = typeof data === 'object' && data.type ? data.type : 'TAB_SWITCH';
+            const date = new Date();
+            const timeStr = date.toTimeString().split(' ')[0];
+
+            room.activeViolations[socket.id] = {
+                socketId: socket.id,
+                name: groupName,
+                type: type,
+                timeStr: timeStr,
+                fullscreen: typeof data === 'object' ? !!data.fullscreen : false,
+                visibilityState: typeof data === 'object' && data.visibilityState ? data.visibilityState : 'hidden',
+                hasFocus: typeof data === 'object' && typeof data.hasFocus === 'boolean' ? data.hasFocus : false,
+                details: typeof data === 'object' && data.details ? data.details : 'Participant switched focus or exited page',
+                timestamp: Date.now()
+            };
 
             // Broadcast ALL reasons currently freezing the room
-            const violatorNames = Object.values(room.activeViolations);
+            const violatorNames = Object.values(room.activeViolations).map(v => v.name || v);
             const pendingNames = Object.values(room.pendingRequests);
             io.to(code).emit('global_freeze', {
                 violatorNames,
@@ -319,9 +368,9 @@ io.on('connection', (socket) => {
                 manualFreeze: room.manualFreeze
             });
 
-            // Specifically notify host with the full list + socket details
+            // Specifically notify host with the full list of rich violation details
             io.to(room.host).emit('tab_violation_alert', {
-                violations: Object.entries(room.activeViolations).map(([id, name]) => ({ socketId: id, name }))
+                violations: Object.values(room.activeViolations)
             });
         }
     });
@@ -353,7 +402,8 @@ io.on('connection', (socket) => {
         // Remove from active tracking
         delete room.activeViolations[targetSocketId];
 
-        const remainingViolatorNames = Object.values(room.activeViolations);
+        const remainingViolators = Object.values(room.activeViolations);
+        const remainingViolatorNames = remainingViolators.map(v => v.name || v);
         const remainingPendingNames = Object.values(room.pendingRequests);
 
         if (remainingViolatorNames.length > 0 || remainingPendingNames.length > 0 || room.manualFreeze) {
@@ -365,9 +415,9 @@ io.on('connection', (socket) => {
             });
 
             // If there were violators, update host's violation panel
-            if (remainingViolatorNames.length > 0) {
+            if (remainingViolators.length > 0) {
                 io.to(room.host).emit('tab_violation_alert', {
-                    violations: Object.entries(room.activeViolations).map(([id, name]) => ({ socketId: id, name }))
+                    violations: remainingViolators
                 });
             } else {
                 // If NO violators but still frozen (members pending or manual), close violation alert
@@ -376,6 +426,7 @@ io.on('connection', (socket) => {
         } else {
             // All reasons cleared (no violators AND no pending requests AND no manual freeze)
             io.to(code).emit('violation_resolved', { action, targetSocketId });
+            io.to(room.host).emit('tab_violation_alert', { violations: [] });
         }
 
         // Tell the specific violator their fate
@@ -439,7 +490,8 @@ io.on('connection', (socket) => {
                 }
 
                 if (stateChanged) {
-                    const remainingViolatorNames = Object.values(room.activeViolations);
+                    const remainingViolators = Object.values(room.activeViolations);
+                    const remainingViolatorNames = remainingViolators.map(v => v.name || v);
                     const remainingPendingNames = Object.values(room.pendingRequests);
 
                     if (remainingViolatorNames.length > 0 || remainingPendingNames.length > 0 || room.manualFreeze) {
@@ -453,13 +505,61 @@ io.on('connection', (socket) => {
                     }
 
                     io.to(room.host).emit('tab_violation_alert', {
-                        violations: Object.entries(room.activeViolations).map(([id, name]) => ({ socketId: id, name }))
+                        violations: remainingViolators
                     });
                 }
             }
         }
     });
 });
+
+// Periodic Server-Side Heartbeat / Presence Monitor (Check every 5 seconds)
+setInterval(() => {
+    const now = Date.now();
+    for (const code in rooms) {
+        const room = rooms[code];
+        if (!room || !room.host) continue;
+
+        let violationsUpdated = false;
+        for (const socketId in room.groups) {
+            const group = room.groups[socketId];
+            if (!group) continue;
+
+            const lastHb = group.lastHeartbeat || now;
+            // Flag if heartbeat missed for over 12 seconds
+            if (now - lastHb > 12000 && !room.activeViolations[socketId]) {
+                const date = new Date();
+                const timeStr = date.toTimeString().split(' ')[0];
+                room.activeViolations[socketId] = {
+                    socketId,
+                    name: group.name,
+                    type: 'HEARTBEAT_TIMEOUT',
+                    timeStr: timeStr,
+                    fullscreen: group.fullscreen || false,
+                    visibilityState: group.visibilityState || 'unknown',
+                    hasFocus: group.hasFocus || false,
+                    details: 'No heartbeat received from device for 12+ seconds',
+                    timestamp: now
+                };
+                violationsUpdated = true;
+            }
+        }
+
+        if (violationsUpdated) {
+            const remainingViolators = Object.values(room.activeViolations);
+            const violatorNames = remainingViolators.map(v => v.name || v);
+            const pendingNames = Object.values(room.pendingRequests);
+            io.to(code).emit('global_freeze', {
+                violatorNames,
+                pendingNames,
+                manualFreeze: room.manualFreeze
+            });
+            io.to(room.host).emit('tab_violation_alert', {
+                violations: remainingViolators
+            });
+        }
+    }
+}, 5000);
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {

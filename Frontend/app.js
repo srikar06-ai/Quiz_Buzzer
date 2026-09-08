@@ -676,45 +676,90 @@ function renderDisqualified(disqualified) {
     });
 }
 
-// TAB VIOLATION LOGIC
-let lastViolatorSocketId = null;
+// ADVANCED ANTI-CHEATING MONITORING ENGINE
+let lastViolationTime = 0;
+const VIOLATION_COOLDOWN_MS = 1500; // Deduplication cooldown window (1.5s)
 
-// Player: document visibility change (tab switch)
-function triggerViolationWarning() {
-    if (!isHost && currentRoomCode) {
-        // Show local warning modal
-        if (redWarningModal) redWarningModal.classList.remove('hidden');
-
-        // Emit violation to server (Freezes room for everyone)
-        socket.emit('tab_violation', currentRoomCode);
-    }
+function isFullscreenActive() {
+    return !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement);
 }
 
-document.addEventListener("visibilitychange", () => {
+function sendViolation(type, details = '') {
+    if (isHost || !currentRoomCode) return;
+
+    const now = Date.now();
+    if (now - lastViolationTime < VIOLATION_COOLDOWN_MS) return;
+    lastViolationTime = now;
+
+    const fullscreen = isFullscreenActive();
+    const visibilityState = document.visibilityState || 'visible';
+    const hasFocus = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+
+    if (redWarningModal) redWarningModal.classList.remove('hidden');
+
+    socket.emit('tab_violation', {
+        code: currentRoomCode,
+        groupName: currentGroupName,
+        type: type,
+        fullscreen: fullscreen,
+        visibilityState: visibilityState,
+        hasFocus: hasFocus,
+        details: details,
+        timestamp: now
+    });
+}
+
+// 1. Fullscreen Change & Exit Listening
+const handleFullscreenChange = () => {
+    if (isHost || !currentRoomCode) return;
+    if (!isFullscreenActive()) {
+        sendViolation('FULLSCREEN_EXIT', 'Exited immersive fullscreen mode');
+    }
+};
+
+document.addEventListener('fullscreenchange', handleFullscreenChange);
+document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+document.addEventListener('MSFullscreenChange', handleFullscreenChange);
+
+document.addEventListener('fullscreenerror', () => sendViolation('FULLSCREEN_ERROR', 'Fullscreen error encountered'));
+document.addEventListener('webkitfullscreenerror', () => sendViolation('FULLSCREEN_ERROR', 'Fullscreen error encountered'));
+
+// 2. Visibility Change
+document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
-        triggerViolationWarning();
+        sendViolation('TAB_SWITCH', 'Switched browser tab or minimized application');
     }
 });
 
-// Windows/Mobile blur detection
-window.addEventListener("blur", () => {
-    triggerViolationWarning();
+// 3. Window Blur / System UI Detection (e.g. Notification Panel Pull-down)
+window.addEventListener('blur', () => {
+    if (isHost || !currentRoomCode) return;
+    const isVisible = document.visibilityState === 'visible';
+    if (isVisible) {
+        sendViolation('SUSPICIOUS_SYSTEM_UI', 'Window lost focus while page remained visible (notification panel or app overlay)');
+    } else {
+        sendViolation('WINDOW_BLUR', 'Window lost focus');
+    }
 });
 
-// Shortcut Blocking (Aggressive)
+// 4. Page Hide
+window.addEventListener('pagehide', () => {
+    sendViolation('PAGE_HIDDEN', 'Page hidden or browser context changed');
+});
+
+// 5. Shortcut Blocking (Aggressive)
 document.addEventListener('keydown', (e) => {
     if (isHost) return;
 
-    // Block Alt+Tab (simulated), F12, Ctrl+Shift+I, etc.
     if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && e.key === 'I')) {
         e.preventDefault();
         return false;
     }
 
-    // Warn on Escape
     if (e.key === 'Escape') {
         e.preventDefault();
-        requestFullScreen();
+        handleParticipantReEntry();
     }
 });
 
@@ -722,6 +767,33 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('contextmenu', (e) => {
     if (!isHost) e.preventDefault();
 });
+
+// 6. Periodic Lightweight Participant Heartbeat (Every 4s)
+setInterval(() => {
+    if (!isHost && currentRoomCode && currentGroupName) {
+        socket.emit('participant_heartbeat', {
+            code: currentRoomCode,
+            groupName: currentGroupName,
+            fullscreen: isFullscreenActive(),
+            visibilityState: document.visibilityState || 'visible',
+            hasFocus: typeof document.hasFocus === 'function' ? document.hasFocus() : true,
+            timestamp: Date.now()
+        });
+    }
+}, 4000);
+
+// Participant Re-Entry Handler
+async function handleParticipantReEntry() {
+    if (redWarningModal) redWarningModal.classList.add('hidden');
+    await requestFullScreen();
+    if (currentRoomCode) {
+        socket.emit('participant_returned', { code: currentRoomCode });
+    }
+}
+
+if (btnWarningStay) {
+    btnWarningStay.addEventListener('click', handleParticipantReEntry);
+}
 
 // Global Freeze Listener
 socket.on('global_freeze', ({ violatorNames, pendingNames, manualFreeze }) => {
@@ -733,7 +805,7 @@ socket.on('global_freeze', ({ violatorNames, pendingNames, manualFreeze }) => {
         }
         if (violatorNames && violatorNames.length > 0) {
             const names = violatorNames.join("', '");
-            msg += `⚠️ <strong style="color:var(--danger)">Teams '${names}'</strong> are trying to open other tabs!<br>`;
+            msg += `⚠️ <strong style="color:var(--danger)">Teams '${names}'</strong> triggered anti-cheating alerts!<br>`;
         }
         if (pendingNames && pendingNames.length > 0) {
             const names = pendingNames.join("', '");
@@ -747,32 +819,57 @@ socket.on('global_freeze', ({ violatorNames, pendingNames, manualFreeze }) => {
     if (freezeModal) freezeModal.classList.remove('hidden');
 });
 
-// Host: Tab Violation Alert Received (Multiple)
+// Host: Rich Tab Violation Alerts Received
 socket.on('tab_violation_alert', ({ violations }) => {
     if (!isHost) return;
 
     if (violatorListContainer) {
         violatorListContainer.innerHTML = '';
-        if (violations.length === 0) {
+        if (!violations || violations.length === 0) {
             if (hostAlertModal) hostAlertModal.classList.add('hidden');
             return;
         }
 
         violations.forEach(v => {
+            const vName = typeof v === 'object' ? v.name : v;
+            const vType = typeof v === 'object' && v.type ? v.type : 'TAB_SWITCH';
+            const vTime = typeof v === 'object' && v.timeStr ? v.timeStr : '';
+            const vDetails = typeof v === 'object' && v.details ? v.details : '';
+            const vSocketId = typeof v === 'object' && v.socketId ? v.socketId : '';
+
+            let badgeColor = '#ef4444';
+            if (vType === 'SUSPICIOUS_SYSTEM_UI') badgeColor = '#f59e0b';
+            else if (vType === 'HEARTBEAT_TIMEOUT') badgeColor = '#ec4899';
+
             const div = document.createElement('div');
-            div.style = 'display:flex; justify-content:space-between; align-items:center; background:rgba(255,0,0,0.1); padding:0.8rem; border-radius:8px; margin-bottom:0.5rem; border:1px solid rgba(255,0,0,0.2);';
+            div.style = 'background:rgba(255,255,255,0.05); padding:1rem; border-radius:10px; margin-bottom:0.8rem; border:1px solid rgba(255,255,255,0.1); text-align:left;';
             div.innerHTML = `
-                <span style="font-weight:700;">${v.name}</span>
-                <div style="display:flex; gap:0.5rem;">
-                    <button class="btn warning-btn" style="padding:0.4rem 0.8rem; font-size:0.8rem;" onclick="resolveTeam('${v.socketId}', 'disqualify')">Disqualify</button>
-                    <button class="btn secondary-btn" style="padding:0.4rem 0.8rem; font-size:0.8rem;" onclick="resolveTeam('${v.socketId}', 'letgo')">Let Go</button>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
+                    <span style="font-weight:700; font-size:1.1rem; color:#fff;">⚠️ ${vName}</span>
+                    <span style="background:${badgeColor}; color:#fff; font-size:0.7rem; font-weight:800; padding:0.2rem 0.5rem; border-radius:4px;">${vType}</span>
+                </div>
+                <div style="font-size:0.8rem; color:var(--text-secondary); margin-bottom:0.8rem;">
+                    <div>Time: <strong>${vTime}</strong></div>
+                    <div>${vDetails}</div>
+                </div>
+                <div style="display:flex; gap:0.5rem; justify-content:flex-end;">
+                    <button class="btn warning-btn" style="padding:0.4rem 0.8rem; font-size:0.8rem;" onclick="resolveTeam('${vSocketId}', 'disqualify')">Disqualify</button>
+                    <button class="btn secondary-btn" style="padding:0.4rem 0.8rem; font-size:0.8rem; background:#f59e0b; color:#fff;" onclick="resolveTeam('${vSocketId}', 'warn')">Warn</button>
+                    <button class="btn primary-btn" style="padding:0.4rem 0.8rem; font-size:0.8rem;" onclick="resolveTeam('${vSocketId}', 'letgo')">Let Go</button>
                 </div>
             `;
             violatorListContainer.appendChild(div);
         });
     }
 
-    if (hostAlertModal && violations.length > 0) hostAlertModal.classList.remove('hidden');
+    if (hostAlertModal && violations && violations.length > 0) hostAlertModal.classList.remove('hidden');
+});
+
+// Host: Participant returned alert
+socket.on('participant_returned_alert', (data) => {
+    if (isHost && data && data.name) {
+        showToast(`Team '${data.name}' returned to fullscreen.`, 'info');
+    }
 });
 
 // Global resolution helper for host
@@ -782,18 +879,18 @@ window.resolveTeam = (socketId, action) => {
 
 // Host: Resolve UI updates
 socket.on('violation_resolved', ({ action, targetSocketId }) => {
-    // If host, just hide our local violation modal
     if (isHost) {
         if (hostAlertModal) hostAlertModal.classList.add('hidden');
         return;
     }
 
-    // Participants: hide the freeze and warning overlays
     if (freezeModal) freezeModal.classList.add('hidden');
     if (redWarningModal) redWarningModal.classList.add('hidden');
 
     if (action === 'letgo') {
         showToast('Host resumed the game!', 'success');
+    } else if (action === 'warn') {
+        showToast('Host issued a warning!', 'warning');
     } else if (action === 'join_resolved') {
         showToast('Host resolved join requests!', 'success');
     } else if (action === 'manual_unfreeze') {
