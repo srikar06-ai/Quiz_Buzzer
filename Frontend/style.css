@@ -592,65 +592,13 @@ input:focus {
     height: 280px;
     border-radius: 50%;
     border: none;
-    background: linear-gradient(145deg, #1e293b, #0f172a);
-    box-shadow:
-        10px 10px 30px rgba(0, 0, 0, 0.5),
-        -10px -10px 30px rgba(255, 255, 255, 0.05),
-        inset 0 0 0 10px rgba(0, 0, 0, 0.2);
     position: relative;
     cursor: pointer;
-    transition: all 0.1s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     outline: none;
     display: flex;
     justify-content: center;
     align-items: center;
-}
-
-.buzzer-btn:active,
-.buzzer-btn.pressed {
-    transform: scale(0.95) translateY(10px);
-    box-shadow:
-        5px 5px 15px rgba(0, 0, 0, 0.5),
-        -5px -5px 15px rgba(255, 255, 255, 0.05),
-        inset 0 0 0 20px rgba(0, 0, 0, 0.4);
-}
-
-.buzzer-inner {
-    width: 85%;
-    height: 85%;
-    border-radius: 50%;
-    background: radial-gradient(circle at 30% 30%, #475569, #1e293b);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    transition: all 0.3s;
-}
-
-/* Buzzer states */
-.buzzer-btn.active .buzzer-inner {
-    background: radial-gradient(circle at 30% 30%, #4ade80, #15803d);
-    box-shadow: 0 0 25px #22c55e, 0 0 50px #22c55e, 0 0 80px rgba(34, 197, 94, 0.9), inset 0 0 25px rgba(255, 255, 255, 0.4);
-    animation: neonPulse 2s infinite alternate;
-}
-
-.buzzer-btn.active:hover .buzzer-inner {
-    background: radial-gradient(circle at 30% 30%, #86efac, #16a34a);
-    box-shadow: 0 0 35px #4ade80, 0 0 70px #22c55e, 0 0 100px rgba(74, 222, 128, 1), inset 0 0 30px rgba(255, 255, 255, 0.6);
-}
-
-@keyframes neonPulse {
-    0% {
-        box-shadow: 0 0 20px #22c55e, 0 0 40px #22c55e, 0 0 60px rgba(34, 197, 94, 0.7), inset 0 0 20px rgba(255, 255, 255, 0.3);
-    }
-    100% {
-        box-shadow: 0 0 30px #4ade80, 0 0 65px #22c55e, 0 0 95px rgba(74, 222, 128, 0.9), inset 0 0 30px rgba(255, 255, 255, 0.5);
-    }
-}
-
-.buzzer-btn,
-.buzzer-inner,
-.buzzer-text,
-.btn {
     -webkit-touch-callout: none;
     -webkit-user-select: none;
     user-select: none;
@@ -658,21 +606,86 @@ input:focus {
     touch-action: manipulation;
 }
 
-.buzzer-btn.buzzed .buzzer-inner {
-    background: radial-gradient(circle at 30% 30%, #3b82f6, #1d4ed8);
-    box-shadow: 0 0 45px rgba(59, 130, 246, 0.8), 0 0 90px rgba(37, 99, 235, 0.5);
+.buzzer-inner {
+    width: 85%;
+    height: 85%;
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    transition: all 0.3s ease;
 }
 
-.buzzer-btn.disabled .buzzer-inner {
-    background: radial-gradient(circle at 30% 30%, #1e293b, #000000);
-    box-shadow: inset 0 0 25px rgba(0, 0, 0, 0.9);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    cursor: not-allowed;
-}
-
+/* 1. WAIT STATE (Disabled / Off Mode) - FULL BLACK */
 .buzzer-btn.disabled {
-    background: #000000;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8);
+    background: #000000 !important;
+    box-shadow: 0 0 20px rgba(0, 0, 0, 0.9), inset 0 0 15px rgba(0, 0, 0, 0.9) !important;
+    border: 3px solid #1e293b !important;
+    cursor: not-allowed !important;
+}
+.buzzer-btn.disabled .buzzer-inner {
+    background: radial-gradient(circle at 30% 30%, #0f172a, #000000) !important;
+    box-shadow: inset 0 0 30px #000000 !important;
+    border: 1px solid rgba(255, 255, 255, 0.05) !important;
+}
+.buzzer-btn.disabled .buzzer-text {
+    color: #475569 !important;
+    text-shadow: none !important;
+}
+
+/* 2. BUZZ STATE (Active / Ready to Press) - LIGHT NEON GREEN WITH HIGH NEON GLOW */
+.buzzer-btn.active {
+    background: linear-gradient(145deg, #22c55e, #15803d) !important;
+    box-shadow:
+        0 0 30px #22c55e,
+        0 0 60px #22c55e,
+        0 0 100px rgba(34, 197, 94, 1),
+        inset 0 0 20px rgba(255, 255, 255, 0.5) !important;
+    border: 4px solid #86efac !important;
+    animation: neonGreenGlow 1.5s infinite alternate !important;
+}
+.buzzer-btn.active .buzzer-inner {
+    background: radial-gradient(circle at 35% 35%, #4ade80, #16a34a) !important;
+    box-shadow: inset 0 0 25px rgba(255, 255, 255, 0.6), 0 0 40px #22c55e !important;
+}
+.buzzer-btn.active .buzzer-text {
+    color: #ffffff !important;
+    text-shadow: 0 0 15px rgba(255, 255, 255, 0.9), 0 0 30px #22c55e !important;
+}
+
+@keyframes neonGreenGlow {
+    0% {
+        box-shadow: 0 0 25px #22c55e, 0 0 50px #22c55e, 0 0 85px rgba(34, 197, 94, 0.9), inset 0 0 15px rgba(255, 255, 255, 0.4) !important;
+    }
+    100% {
+        box-shadow: 0 0 45px #4ade80, 0 0 85px #22c55e, 0 0 130px rgba(74, 222, 128, 1), inset 0 0 35px rgba(255, 255, 255, 0.8) !important;
+    }
+}
+
+/* 3. BUZZED STATE (Pushed / Pressed) - STRIKING BLUE */
+.buzzer-btn.buzzed {
+    background: linear-gradient(145deg, #3b82f6, #1d4ed8) !important;
+    box-shadow:
+        0 0 30px #3b82f6,
+        0 0 60px #2563eb,
+        0 0 90px rgba(59, 130, 246, 0.9),
+        inset 0 0 20px rgba(255, 255, 255, 0.5) !important;
+    border: 4px solid #93c5fd !important;
+}
+.buzzer-btn.buzzed .buzzer-inner {
+    background: radial-gradient(circle at 35% 35%, #60a5fa, #1e40af) !important;
+    box-shadow: inset 0 0 25px rgba(255, 255, 255, 0.6), 0 0 40px #3b82f6 !important;
+}
+.buzzer-btn.buzzed .buzzer-text {
+    color: #ffffff !important;
+    text-shadow: 0 0 15px rgba(255, 255, 255, 0.9), 0 0 30px #3b82f6 !important;
+}
+
+/* Pressed Animation */
+.buzzer-btn:active,
+.buzzer-btn.pressed {
+    transform: scale(0.93) translateY(8px) !important;
+}
     cursor: not-allowed;
 }
 
