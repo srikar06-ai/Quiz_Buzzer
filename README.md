@@ -1,15 +1,15 @@
-# Quiz Buzzer V3 — Technical Quiz & Fullscreen Anti-Cheating System
+# Quiz Buzzer V3 — Real-Time Quiz & Anti-Cheating System
 
 Real-time, microsecond-precision web quiz buzzer application with multi-layered anti-cheating monitoring, presence tracking, and host controls.
 
 ## 🚀 Features
 
 - **Microsecond Precision Buzzing**: High-precision timestamp tracking on the server for accurate buzzer rankings.
-- **Strict Fullscreen Enforcement & Lock Screen**: Non-dismissible blocking Lock Screen (`z-index: 20000`) whenever fullscreen is lost. Requires browser-verified `fullscreenchange` re-entry.
-- **Server-Side Buzz Protection**: Buzz attempts received while a participant is outside fullscreen or violating state are rejected on the server (`buzz_rejected`), preventing DevTools/DOM manipulation bypasses.
+- **Tab & App Switch Avoidance & Lock Screen**: Non-dismissible blocking Lock Screen (`z-index: 20000`) whenever a participant switches tabs or minimizes the browser application. Requires tapping "Return to Game" to send `participant_returned` status.
+- **Server-Side Buzz Protection**: Buzz attempts received while a participant is in an active violation state are rejected on the server (`buzz_rejected`), preventing DevTools/DOM manipulation bypasses.
 - **System UI & Focus Detection**: Captures observable focus shifts (`window.blur` while visible) as `SUSPICIOUS_SYSTEM_UI` alerts on the Host Dashboard.
 - **Participant Presence Heartbeat**: Periodic 4-second client heartbeats with automatic 12-second server timeout detection (`HEARTBEAT_TIMEOUT`).
-- **Host Control Dashboard**: Live point scoring (+10, +7, +4 quick buttons), manual room freeze, buzzer reset to OFF mode, and host resolution options (`Warn`, `Disqualify`, `Let Go`).
+- **Host Control Dashboard**: Flexible web control dashboard (no fullscreen requirement for Host), live point scoring (+10, +7, +4 quick buttons), manual room freeze, buzzer reset to OFF mode, and host resolution options (`Warn`, `Disqualify`, `Let Go`).
 
 ---
 

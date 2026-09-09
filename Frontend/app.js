@@ -425,7 +425,7 @@ socket.on('buzz_registered', (data) => {
 
 // PLAYER: Server-side Buzz Rejection (DevTools or UI bypass prevention)
 socket.on('buzz_rejected', (data) => {
-    showToast(data.message || 'Buzz rejected: Fullscreen required!', 'error');
+    showToast(data.message || 'Buzz rejected: Active violation pending!', 'error');
     lockQuizUI();
 });
 
@@ -876,7 +876,7 @@ socket.on('tab_violation_alert', ({ violations }) => {
 // Host: Participant returned alert
 socket.on('participant_returned_alert', (data) => {
     if (isHost && data && data.name) {
-        showToast(`Team '${data.name}' returned to fullscreen.`, 'info');
+        showToast(`Team '${data.name}' returned to game.`, 'info');
     }
 });
 
