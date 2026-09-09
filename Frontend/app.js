@@ -1039,7 +1039,7 @@ function setPlayerBuzzerState(state, rank = null) {
         if (buzzerText) buzzerText.textContent = 'BUZZ';
         if (playerStatusText) {
             playerStatusText.textContent = 'Buzzer is active! Tap as fast as you can.';
-            playerStatusText.style.color = 'var(--text-secondary)';
+            playerStatusText.style.color = '#22c55e';
         }
     }
     else if (state === 'buzzed') {
@@ -1048,10 +1048,10 @@ function setPlayerBuzzerState(state, rank = null) {
         if (playerStatusText) {
             if (rank) {
                 playerStatusText.textContent = `You buzzed in rank #${rank}`;
-                playerStatusText.style.color = rank === 1 ? 'var(--success)' : 'var(--primary-color)';
+                playerStatusText.style.color = rank === 1 ? '#22c55e' : '#3b82f6';
             } else {
                 playerStatusText.textContent = 'Buzzed! Ranking...';
-                playerStatusText.style.color = 'var(--success)';
+                playerStatusText.style.color = '#3b82f6';
             }
         }
     }
