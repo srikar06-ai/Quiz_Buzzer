@@ -638,8 +638,8 @@ input:focus {
 }
 
 .buzzer-btn.buzzed .buzzer-inner {
-    background: radial-gradient(circle at 30% 30%, #10b981, #047857);
-    box-shadow: 0 0 50px rgba(16, 185, 129, 0.6);
+    background: radial-gradient(circle at 30% 30%, #38bdf8, #0284c7);
+    box-shadow: 0 0 50px rgba(56, 189, 248, 0.6);
 }
 
 .buzzer-btn.disabled .buzzer-inner {

@@ -168,10 +168,9 @@ buzzerBtn.addEventListener('click', () => {
 
     // Only buzz if it is active (not buzzed and buzzers allowed)
     if (buzzerBtn.classList.contains('active')) {
-        // Optimistic UI update
-        buzzerBtn.classList.remove('active');
+        // Optimistic UI update: Immediately transition to BUZZED (Sky Blue)
+        setPlayerBuzzerState('buzzed');
         buzzerBtn.classList.add('pressed');
-
         setTimeout(() => buzzerBtn.classList.remove('pressed'), 150);
 
         socket.emit('buzz', currentRoomCode);
@@ -988,10 +987,14 @@ function renderBuzzesView(buzzes) {
     // Render for Host main list
     if (isHost) {
         renderBuzzesList(buzzes, buzzesList);
+    } else {
+        // Player view: check if player has buzzed and sync rank & buzzed state
+        const myBuzzIndex = buzzes.findIndex(b => b.socketId === socket.id);
+        if (myBuzzIndex !== -1) {
+            setPlayerBuzzerState('buzzed', myBuzzIndex + 1);
+        }
+        renderBuzzesList(buzzes, playerBuzzesList);
     }
-
-    // Render for Player view (top list)
-    renderBuzzesList(buzzes, playerBuzzesList);
 }
 
 function renderBuzzesList(buzzes, container) {
@@ -1025,30 +1028,40 @@ function renderBuzzesList(buzzes, container) {
 }
 
 function setPlayerBuzzerState(state, rank = null) {
+    if (!buzzerBtn) return;
+
+    const isPressed = buzzerBtn.classList.contains('pressed');
     buzzerBtn.className = 'buzzer-btn'; // reset
+    if (isPressed) buzzerBtn.classList.add('pressed');
 
     if (state === 'active') {
         buzzerBtn.classList.add('active');
-        buzzerText.textContent = 'BUZZ';
-        playerStatusText.textContent = 'Buzzer is active! Tap as fast as you can.';
-        playerStatusText.style.color = 'var(--text-secondary)';
+        if (buzzerText) buzzerText.textContent = 'BUZZ';
+        if (playerStatusText) {
+            playerStatusText.textContent = 'Buzzer is active! Tap as fast as you can.';
+            playerStatusText.style.color = 'var(--text-secondary)';
+        }
     }
     else if (state === 'buzzed') {
         buzzerBtn.classList.add('buzzed');
-        buzzerText.textContent = `Buzzed!`;
-        playerStatusText.textContent = `You buzzed in rank #${rank}`;
-        if (rank === 1) {
-            playerStatusText.style.color = 'var(--success)';
-        } else {
-            playerStatusText.style.color = 'var(--primary-color)';
+        if (buzzerText) buzzerText.textContent = 'BUZZED';
+        if (playerStatusText) {
+            if (rank) {
+                playerStatusText.textContent = `You buzzed in rank #${rank}`;
+                playerStatusText.style.color = rank === 1 ? 'var(--success)' : '#38bdf8';
+            } else {
+                playerStatusText.textContent = 'Buzzed! Ranking...';
+                playerStatusText.style.color = '#38bdf8';
+            }
         }
     }
     else if (state === 'disabled') {
         buzzerBtn.classList.add('disabled');
-        buzzerBtn.classList.remove('active', 'buzzed');
-        buzzerText.textContent = 'WAIT';
-        playerStatusText.textContent = 'Waiting for host...';
-        playerStatusText.style.color = 'var(--text-secondary)';
+        if (buzzerText) buzzerText.textContent = 'WAIT';
+        if (playerStatusText) {
+            playerStatusText.textContent = 'Waiting for host...';
+            playerStatusText.style.color = 'var(--text-secondary)';
+        }
     }
 }
 
