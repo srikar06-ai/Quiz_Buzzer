@@ -145,9 +145,6 @@ btnJoinRoom.addEventListener('click', () => {
     const code = inputRoomCode.value.trim().toUpperCase();
     const name = inputGroupName.value.trim();
 
-    // Trigger full-screen immediately on this gesture
-    requestFullScreen();
-
     if (!code || code.length !== 4) {
         showToast('Please enter a valid 4-letter room code', 'error');
         return;
@@ -162,9 +159,9 @@ btnJoinRoom.addEventListener('click', () => {
 });
 
 buzzerBtn.addEventListener('click', () => {
-    // SERVER & FRONTEND LOCK PROTECTION: Block click if outside fullscreen or locked
-    if (!isHost && (!isFullscreenActive() || isQuizLocked)) {
-        showToast('You must restore Fullscreen before buzzing!', 'error');
+    // FRONTEND LOCK PROTECTION: Block click if quiz is locked
+    if (!isHost && isQuizLocked) {
+        showToast('Quiz is locked due to tab/app switch violation!', 'error');
         lockQuizUI();
         return;
     }
@@ -207,11 +204,6 @@ buzzerBtn.addEventListener('touchstart', (e) => {
 }, { passive: false });
 
 
-if (btnWarningStay) {
-    btnWarningStay.addEventListener('click', () => {
-        if (redWarningModal) redWarningModal.classList.add('hidden');
-    });
-}
 if (btnWarningLeave) {
     btnWarningLeave.addEventListener('click', () => {
         window.location.reload();
@@ -225,33 +217,19 @@ socket.on('error', (msg) => {
     if (waitingModal) waitingModal.classList.add('hidden');
 });
 
-// Fullscreen & Wake Lock Helpers
+// Wake Lock Helper
 window.requestFullScreen = async function () {
     try {
-        if (!document.fullscreenElement && !document.webkitFullscreenElement) {
-            if (document.documentElement.requestFullscreen) {
-                await document.documentElement.requestFullscreen();
-            } else if (document.documentElement.webkitRequestFullscreen) {
-                await document.documentElement.webkitRequestFullscreen();
-            }
-        }
-        // Keep screen awake
         if ('wakeLock' in navigator) {
             wakeLock = await navigator.wakeLock.request('screen');
         }
     } catch (e) {
-        console.log("Immersive mode blocked:", e);
-        showToast('Please tap "Go Fullscreen" to enable protections', 'info');
+        console.log("Wake lock error:", e);
     }
 }
 
-// Re-request on any modal interaction (to fix mobile block)
-if (freezeModal) freezeModal.addEventListener('click', requestFullScreen);
-if (redWarningModal) redWarningModal.addEventListener('click', requestFullScreen);
-
 async function releaseImmersiveMode() {
     try {
-        if (document.exitFullscreen) await document.exitFullscreen();
         if (wakeLock) {
             await wakeLock.release();
             wakeLock = null;
@@ -437,7 +415,6 @@ socket.on('joined_room', (data) => {
 
     switchView('player');
     isHost = false; // Explicitly ensure NOT a host on player join
-    requestFullScreen();
     showToast('Joined Room!', 'success');
 });
 
@@ -716,23 +693,17 @@ function lockQuizUI() {
     }
     if (redWarningModal) redWarningModal.classList.remove('hidden');
     if (fullscreenLockStatus) {
-        fullscreenLockStatus.innerHTML = 'Fullscreen status: ❌ Outside Fullscreen (Quiz Locked)';
+        fullscreenLockStatus.innerHTML = 'Status: ⚠️ Tab/App Switch Detected (Quiz Locked)';
         fullscreenLockStatus.style.borderColor = 'rgba(239, 68, 68, 0.4)';
         fullscreenLockStatus.style.color = '#ef4444';
     }
 }
 
 function unlockQuizUI() {
-    // STRICT VERIFICATION: Do NOT unlock unless browser confirms document.fullscreenElement is active
-    if (!isFullscreenActive()) {
-        lockQuizUI();
-        return;
-    }
-
     isQuizLocked = false;
     if (redWarningModal) redWarningModal.classList.add('hidden');
     if (fullscreenLockStatus) {
-        fullscreenLockStatus.innerHTML = 'Fullscreen status: 🔒 Verified Fullscreen';
+        fullscreenLockStatus.innerHTML = 'Status: 🔒 Active in Quiz';
         fullscreenLockStatus.style.borderColor = 'rgba(16, 185, 129, 0.4)';
         fullscreenLockStatus.style.color = '#10b981';
     }
@@ -766,42 +737,7 @@ function sendViolation(type, details = '') {
     });
 }
 
-// 1. Fullscreen Change & Exit Listening with Verified State Machine
-const handleFullscreenChange = () => {
-    if (isHost || !currentRoomCode) return;
-    const active = isFullscreenActive();
-    if (!active) {
-        playerState = PLAYER_STATE.VIOLATION;
-        lockQuizUI();
-        sendViolation('FULLSCREEN_EXIT', 'Exited immersive fullscreen mode');
-    } else {
-        if (playerState === PLAYER_STATE.WAITING_REENTRY || playerState === PLAYER_STATE.VIOLATION) {
-            playerState = PLAYER_STATE.RESTORED;
-            socket.emit('participant_returned', { code: currentRoomCode, fullscreen: true });
-            unlockQuizUI();
-            playerState = PLAYER_STATE.NORMAL;
-            showToast('Fullscreen verified & restored! Quiz unlocked.', 'success');
-        } else {
-            unlockQuizUI();
-        }
-    }
-};
-
-document.addEventListener('fullscreenchange', handleFullscreenChange);
-document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
-document.addEventListener('mozfullscreenchange', handleFullscreenChange);
-document.addEventListener('MSFullscreenChange', handleFullscreenChange);
-
-document.addEventListener('fullscreenerror', () => {
-    lockQuizUI();
-    sendViolation('FULLSCREEN_ERROR', 'Fullscreen error encountered');
-});
-document.addEventListener('webkitfullscreenerror', () => {
-    lockQuizUI();
-    sendViolation('FULLSCREEN_ERROR', 'Fullscreen error encountered');
-});
-
-// 2. Visibility Change
+// 1. Visibility Change Detection
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
         lockQuizUI();
@@ -809,7 +745,7 @@ document.addEventListener('visibilitychange', () => {
     }
 });
 
-// 3. Window Blur / System UI Detection
+// 2. Window Blur / System UI Detection
 window.addEventListener('blur', () => {
     if (isHost || !currentRoomCode) return;
     lockQuizUI();
@@ -821,24 +757,19 @@ window.addEventListener('blur', () => {
     }
 });
 
-// 4. Page Hide
+// 3. Page Hide Detection
 window.addEventListener('pagehide', () => {
     lockQuizUI();
     sendViolation('PAGE_HIDDEN', 'Page hidden or browser context changed');
 });
 
-// 5. Shortcut Blocking
+// 4. Shortcut Blocking
 document.addEventListener('keydown', (e) => {
     if (isHost) return;
 
     if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && e.key === 'I')) {
         e.preventDefault();
         return false;
-    }
-
-    if (e.key === 'Escape') {
-        e.preventDefault();
-        lockQuizUI();
     }
 });
 
@@ -847,7 +778,7 @@ document.addEventListener('contextmenu', (e) => {
     if (!isHost) e.preventDefault();
 });
 
-// 6. Periodic Lightweight Participant Heartbeat Loop (Every 4s)
+// 5. Periodic Lightweight Participant Heartbeat Loop (Every 4s)
 setInterval(() => {
     if (!isHost && currentRoomCode && currentGroupName) {
         socket.emit('participant_heartbeat', {
@@ -861,27 +792,14 @@ setInterval(() => {
     }
 }, 4000);
 
-// Participant Re-Entry Button Handler (Requests Fullscreen but waits for fullscreenchange verification)
+// Participant Return to Game Button Handler
 if (btnWarningStay) {
-    btnWarningStay.addEventListener('click', async () => {
-        playerState = PLAYER_STATE.WAITING_REENTRY;
-        if (fullscreenLockStatus) {
-            fullscreenLockStatus.innerHTML = 'Fullscreen status: ⏳ Requesting Fullscreen...';
-            fullscreenLockStatus.style.borderColor = 'rgba(245, 158, 11, 0.5)';
-            fullscreenLockStatus.style.color = '#f59e0b';
-        }
-        try {
-            await requestFullScreen();
-            // NOTE: DO NOT UNLOCK HERE! We wait for the browser's fullscreenchange event to verify document.fullscreenElement !== null!
-        } catch (err) {
-            console.log("Fullscreen request rejected/failed:", err);
-            if (fullscreenLockStatus) {
-                fullscreenLockStatus.innerHTML = 'Fullscreen status: ❌ Request Rejected by Browser. Tap button again.';
-                fullscreenLockStatus.style.borderColor = 'rgba(239, 68, 68, 0.5)';
-                fullscreenLockStatus.style.color = '#ef4444';
-            }
-            showToast('Fullscreen request rejected by browser. Please tap again.', 'error');
-        }
+    btnWarningStay.addEventListener('click', () => {
+        playerState = PLAYER_STATE.RESTORED;
+        socket.emit('participant_returned', { code: currentRoomCode });
+        unlockQuizUI();
+        playerState = PLAYER_STATE.NORMAL;
+        showToast('Returned to game! Quiz unlocked.', 'success');
     });
 }
 

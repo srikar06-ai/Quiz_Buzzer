@@ -136,7 +136,7 @@ io.on('connection', (socket) => {
         if (!name) return;
 
         if (action === 'allow') {
-            room.groups[targetSocketId] = { name, points: 0, fullscreenActive: true };
+            room.groups[targetSocketId] = { name, points: 0 };
             const targetSocket = io.sockets.sockets.get(targetSocketId);
             if (targetSocket) {
                 targetSocket.join(code);
@@ -196,11 +196,11 @@ io.on('connection', (socket) => {
         const group = room.groups[socket.id];
         if (!group) return; // Not a registered group
 
-        // SERVER-SIDE BUZZ PROTECTION: Reject buzz if participant is outside fullscreen or has active violation
-        if (group.fullscreenActive === false || room.activeViolations[socket.id]) {
+        // SERVER-SIDE BUZZ PROTECTION: Reject buzz if participant has active violation
+        if (room.activeViolations[socket.id]) {
             socket.emit('buzz_rejected', {
-                reason: 'FULLSCREEN_REQUIRED',
-                message: 'You must be in active fullscreen mode and have no active violations to buzz.'
+                reason: 'VIOLATION_ACTIVE',
+                message: 'You have an active violation. Host must resolve your status before you can buzz.'
             });
             return;
         }
@@ -310,7 +310,7 @@ io.on('connection', (socket) => {
     });
 
     // Participant Heartbeat Handler
-    socket.on('participant_heartbeat', ({ code, groupName, fullscreen, visibilityState, hasFocus }) => {
+    socket.on('participant_heartbeat', ({ code, groupName, visibilityState, hasFocus }) => {
         if (!code || typeof code !== 'string') return;
         code = code.toUpperCase();
         const room = rooms[code];
@@ -319,17 +319,13 @@ io.on('connection', (socket) => {
         const group = room.groups[socket.id];
         if (group) {
             group.lastHeartbeat = Date.now();
-            group.fullscreen = fullscreen;
             group.visibilityState = visibilityState;
             group.hasFocus = hasFocus;
-            if (typeof fullscreen === 'boolean') {
-                group.fullscreenActive = fullscreen;
-            }
         }
     });
 
     // Participant Returned Handler
-    socket.on('participant_returned', ({ code, fullscreen }) => {
+    socket.on('participant_returned', ({ code }) => {
         if (!code || typeof code !== 'string') return;
         code = code.toUpperCase();
         const room = rooms[code];
@@ -337,10 +333,8 @@ io.on('connection', (socket) => {
 
         const group = room.groups[socket.id];
         if (group) {
-            group.fullscreenActive = true;
             if (room.activeViolations[socket.id]) {
-                room.activeViolations[socket.id].status = 'Returned to fullscreen (Ready)';
-                room.activeViolations[socket.id].fullscreen = true;
+                room.activeViolations[socket.id].status = 'Returned to game (Waiting for Host)';
             }
             if (room.host) {
                 io.to(room.host).emit('participant_returned_alert', {
@@ -364,9 +358,6 @@ io.on('connection', (socket) => {
         if (!room) return;
 
         const group = room.groups[socket.id];
-        if (group) {
-            group.fullscreenActive = false;
-        }
         const groupName = group ? group.name : room.pendingRequests[socket.id];
         if (groupName) {
             const type = typeof data === 'object' && data.type ? data.type : 'TAB_SWITCH';

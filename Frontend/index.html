@@ -135,9 +135,6 @@
                         <div style="text-align:center;">
                             <span class="label">ROOM</span>
                             <h2 id="player-room-code">ABCD</h2>
-                            <button onclick="requestFullScreen()"
-                                style="font-size:0.5rem; background:none; border:1px solid var(--text-secondary); color:var(--text-secondary); border-radius:4px; margin-top:0.2rem; cursor:pointer;">⛶
-                                Go Immersive</button>
                         </div>
                         <div id="player-status-container" style="text-align:right;">
                             <!-- Status section removed permanently -->
@@ -175,22 +172,22 @@
     <!-- Red Warning Lock Modal (Player) -->
     <div id="red-warning-modal" class="modal-overlay hidden" style="z-index: 20000; background: rgba(0, 0, 0, 0.95);">
         <div class="modal-content red-glow" style="max-width: 450px; padding: 2.5rem 2rem;">
-            <div style="font-size: 3.5rem; margin-bottom: 0.5rem;">🔒</div>
-            <h2 style="color: #ef4444; font-size: 2rem; margin-bottom: 0.8rem;">FULLSCREEN REQUIRED</h2>
-            <p style="color: #f8fafc; font-size: 1.05rem; line-height: 1.5; margin-bottom: 1rem;">
-                You exited fullscreen mode or switched context.
+            <div style="font-size: 3.5rem; margin-bottom: 0.5rem;">⚠️</div>
+            <h2 style="color: #ef4444; font-size: 1.8rem; margin-bottom: 0.8rem;">TAB SWITCH DETECTED</h2>
+            <p style="color: #f8fafc; font-size: 1rem; line-height: 1.5; margin-bottom: 1rem;">
+                You left the quiz page or switched applications.
             </p>
-            <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1.5rem;">
-                You <strong>cannot continue the quiz</strong> or buzz until fullscreen is verified and restored.
+            <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 1.5rem;">
+                A violation alert has been sent to the host. Return to the quiz to continue.
             </p>
             
-            <div id="fullscreen-lock-status" style="margin-bottom: 1.5rem; padding: 0.8rem; background: rgba(239, 68, 68, 0.15); border-radius: 8px; border: 1px solid rgba(239, 68, 68, 0.4); font-weight: 700; color: #ef4444; font-size: 0.95rem;">
-                Fullscreen status: ❌ Outside Fullscreen
+            <div id="fullscreen-lock-status" style="margin-bottom: 1.5rem; padding: 0.8rem; background: rgba(239, 68, 68, 0.15); border-radius: 8px; border: 1px solid rgba(239, 68, 68, 0.4); font-weight: 700; color: #ef4444; font-size: 0.9rem;">
+                Status: ⚠️ Tab / App Switch Reported
             </div>
 
             <div class="modal-actions" style="margin-top: 1rem;">
                 <button id="btn-warning-stay" class="btn primary-btn" style="width: 100%; padding: 1rem; font-size: 1.1rem; background: #ef4444; color: white;">
-                    RETURN TO FULLSCREEN
+                    RETURN TO GAME
                 </button>
             </div>
         </div>
@@ -272,8 +269,6 @@
                 <p style="font-size:0.85rem; color:var(--text-secondary);">Enable <strong>"Do Not Disturb"</strong> on
                     your phone to block incoming calls and notifications during the quiz!</p>
             </div>
-            <button onclick="requestFullScreen()" class="btn secondary-btn" style="margin-top:1.5rem; width:100%;">Go
-                Fullscreen Now</button>
         </div>
     </div>
 
