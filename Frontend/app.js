@@ -252,7 +252,7 @@ if (btnEndQuiz) {
 if (btnCopyLeaderboard) {
     btnCopyLeaderboard.addEventListener('click', async () => {
         if (connectedTeams.length === 0) return;
-        
+
         // Temporarily create a hidden container for the snapshot
         const snapshotContainer = document.createElement('div');
         snapshotContainer.style.position = 'fixed';
@@ -263,7 +263,7 @@ if (btnCopyLeaderboard) {
         snapshotContainer.style.padding = '40px';
         snapshotContainer.style.width = 'fit-content';
         snapshotContainer.style.fontFamily = 'Inter, sans-serif';
-        
+
         const title = document.createElement('h1');
         title.textContent = `Leaderboard - Room ${currentRoomCode}`;
         title.style.textAlign = 'center';
@@ -274,19 +274,19 @@ if (btnCopyLeaderboard) {
         const listContainer = document.createElement('div');
         listContainer.style.display = 'flex';
         listContainer.style.gap = '40px';
-        
+
         const sorted = [...connectedTeams].sort((a, b) => b.points - a.points);
-        
+
         if (sorted.length > 25) {
             // Two columns
             const leftCol = document.createElement('div');
             const rightCol = document.createElement('div');
             leftCol.style.minWidth = '250px';
             rightCol.style.minWidth = '250px';
-            
+
             sorted.slice(0, 25).forEach((team, i) => addTeamToSnapshot(leftCol, team, i + 1));
             sorted.slice(25).forEach((team, i) => addTeamToSnapshot(rightCol, team, i + 26));
-            
+
             listContainer.appendChild(leftCol);
             listContainer.appendChild(rightCol);
         } else {
@@ -296,10 +296,10 @@ if (btnCopyLeaderboard) {
             sorted.forEach((team, i) => addTeamToSnapshot(col, team, i + 1));
             listContainer.appendChild(col);
         }
-        
+
         snapshotContainer.appendChild(listContainer);
         document.body.appendChild(snapshotContainer);
-        
+
         try {
             const canvas = await html2canvas(snapshotContainer);
             canvas.toBlob(async blob => {
@@ -334,7 +334,7 @@ function addTeamToSnapshot(parent, team, rank) {
     item.style.background = 'rgba(255,255,255,0.05)';
     item.style.borderRadius = '6px';
     item.style.fontSize = '14px';
-    
+
     item.innerHTML = `
         <span><strong style="color:#38bdf8; margin-right:10px;">#${rank}</strong> ${team.name}</span>
         <span style="font-weight:700; color:#4ade80;">${team.points} pts</span>
@@ -988,15 +988,15 @@ function renderBuzzesView(buzzes) {
     // Render for Host main list
     if (isHost) {
         renderBuzzesList(buzzes, buzzesList);
-    } 
-    
+    }
+
     // Render for Player view (top list)
     renderBuzzesList(buzzes, playerBuzzesList);
 }
 
 function renderBuzzesList(buzzes, container) {
     if (!container) return;
-    
+
     if (buzzes.length === 0) {
         container.innerHTML = `
             <div class="empty-state large">
@@ -1062,7 +1062,7 @@ function renderHostLeaderboard(teamsWithPoints) {
 
     const sorted = [...teamsWithPoints].sort((a, b) => b.points - a.points);
     hostLeaderboardSummary.innerHTML = '';
-    
+
     sorted.forEach(team => {
         const div = document.createElement('div');
         div.className = 'points-pill';
