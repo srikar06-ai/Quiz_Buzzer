@@ -1048,10 +1048,10 @@ function setPlayerBuzzerState(state, rank = null) {
         if (playerStatusText) {
             if (rank) {
                 playerStatusText.textContent = `You buzzed in rank #${rank}`;
-                playerStatusText.style.color = rank === 1 ? 'var(--success)' : '#38bdf8';
+                playerStatusText.style.color = rank === 1 ? 'var(--success)' : 'var(--primary-color)';
             } else {
                 playerStatusText.textContent = 'Buzzed! Ranking...';
-                playerStatusText.style.color = '#38bdf8';
+                playerStatusText.style.color = 'var(--success)';
             }
         }
     }
