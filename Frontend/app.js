@@ -88,6 +88,16 @@ window.addEventListener('beforeunload', (e) => {
 
 // ----------------- Helpers -----------------
 
+function escapeHTML(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
 function switchView(viewName) {
     Object.values(views).forEach(v => {
         v.classList.remove('active');
@@ -335,8 +345,8 @@ function addTeamToSnapshot(parent, team, rank) {
     item.style.fontSize = '14px';
 
     item.innerHTML = `
-        <span><strong style="color:#38bdf8; margin-right:10px;">#${rank}</strong> ${team.name}</span>
-        <span style="font-weight:700; color:#4ade80;">${team.points} pts</span>
+        <span><strong style="color:#38bdf8; margin-right:10px;">#${rank}</strong> ${escapeHTML(team.name)}</span>
+        <span style="font-weight:700; color:#4ade80;">${Number(team.points) || 0} pts</span>
     `;
     parent.appendChild(item);
 }
@@ -382,11 +392,13 @@ socket.on('requests_update', (requests) => {
         const li = document.createElement('li');
         li.className = 'team-item';
         li.style = 'display:flex; justify-content:space-between; align-items:center;';
+        const safeId = escapeHTML(req.socketId);
+        const safeName = escapeHTML(req.name);
         li.innerHTML = `
-            <span style="font-weight:600;">${req.name}</span>
+            <span style="font-weight:600;">${safeName}</span>
             <div style="display:flex; gap:0.5rem;">
-                <button class="btn primary-btn" style="padding:0.4rem 0.8rem; font-size:0.8rem;" onclick="resolveJoin('${req.socketId}', 'allow')">Allow</button>
-                <button class="btn warning-btn" style="padding:0.4rem 0.8rem; font-size:0.8rem;" onclick="resolveJoin('${req.socketId}', 'reject')">Reject</button>
+                <button class="btn primary-btn" style="padding:0.4rem 0.8rem; font-size:0.8rem;" onclick="resolveJoin('${safeId}', 'allow')">Allow</button>
+                <button class="btn warning-btn" style="padding:0.4rem 0.8rem; font-size:0.8rem;" onclick="resolveJoin('${safeId}', 'reject')">Reject</button>
             </div>
         `;
         requestsList.appendChild(li);
@@ -490,8 +502,8 @@ function renderFinalLeaderboard(results) {
 
     let html = `
         <div style="margin-bottom: 2rem;">
-            <p style="font-size: 1.1rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Room Code: <strong style="color:var(--primary-color)">${results.code}</strong></p>
-            <p style="font-size: 0.9rem; color: var(--text-secondary);">Date: ${new Date().toLocaleString()}</p>
+            <p style="font-size: 1.1rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Room Code: <strong style="color:var(--primary-color)">${escapeHTML(results.code)}</strong></p>
+            <p style="font-size: 0.9rem; color: var(--text-secondary);">Date: ${escapeHTML(new Date().toLocaleString())}</p>
         </div>
         
         <h4 style="margin-bottom: 1rem; color: var(--success); border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem;">Final Standings</h4>
@@ -504,9 +516,9 @@ function renderFinalLeaderboard(results) {
             <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.05); padding: 1rem; border-radius: 8px;">
                 <div style="display:flex; align-items:center; gap: 1rem;">
                     <span style="font-weight: 800; font-size: 1.2rem; min-width: 30px; color:var(--primary-color)">${medal}</span>
-                    <span style="font-weight: 600;">${team.name}</span>
+                    <span style="font-weight: 600;">${escapeHTML(team.name)}</span>
                 </div>
-                <span style="font-weight: 800; color: var(--success); font-size: 1.1rem;">${team.points} pts</span>
+                <span style="font-weight: 800; color: var(--success); font-size: 1.1rem;">${Number(team.points) || 0} pts</span>
             </div>
         `;
     });
@@ -519,7 +531,7 @@ function renderFinalLeaderboard(results) {
             <div style="display:flex; flex-wrap:wrap; gap: 0.5rem;">
         `;
         results.disqualified.forEach(name => {
-            html += `<span style="background:rgba(239, 68, 68, 0.1); color:#ef4444; padding: 0.4rem 0.8rem; border-radius: 20px; font-size: 0.85rem; border: 1px solid rgba(239, 68, 68, 0.2);">❌ ${name}</span>`;
+            html += `<span style="background:rgba(239, 68, 68, 0.1); color:#ef4444; padding: 0.4rem 0.8rem; border-radius: 20px; font-size: 0.85rem; border: 1px solid rgba(239, 68, 68, 0.2);">❌ ${escapeHTML(name)}</span>`;
         });
         html += `</div>`;
     }
@@ -670,7 +682,7 @@ function renderDisqualified(disqualified) {
         const li = document.createElement('li');
         li.className = 'team-item';
         li.style = 'background:rgba(239, 68, 68, 0.1); border-left: 3px solid #ef4444;';
-        li.innerHTML = `<span style="color:#ef4444">❌ ${name}</span>`;
+        li.innerHTML = `<span style="color:#ef4444">❌ ${escapeHTML(name)}</span>`;
         disqualifiedList.appendChild(li);
     });
 }
@@ -811,11 +823,11 @@ socket.on('global_freeze', ({ violatorNames, pendingNames, manualFreeze }) => {
             msg += `🔒 <strong style="color:var(--primary-color)">Room is manually frozen by Host</strong>.<br>`;
         }
         if (violatorNames && violatorNames.length > 0) {
-            const names = violatorNames.join("', '");
+            const names = violatorNames.map(n => escapeHTML(n)).join("', '");
             msg += `⚠️ <strong style="color:var(--danger)">Teams '${names}'</strong> triggered anti-cheating alerts!<br>`;
         }
         if (pendingNames && pendingNames.length > 0) {
-            const names = pendingNames.join("', '");
+            const names = pendingNames.map(n => escapeHTML(n)).join("', '");
             msg += `📨 <strong style="color:var(--secondary)">Teams '${names}'</strong> are requesting to join!<br>`;
         }
 
@@ -838,11 +850,12 @@ socket.on('tab_violation_alert', ({ violations }) => {
         }
 
         violations.forEach(v => {
-            const vName = typeof v === 'object' ? v.name : v;
-            const vType = typeof v === 'object' && v.type ? v.type : 'TAB_SWITCH';
-            const vTime = typeof v === 'object' && v.timeStr ? v.timeStr : '';
-            const vDetails = typeof v === 'object' && v.details ? v.details : '';
-            const vSocketId = typeof v === 'object' && v.socketId ? v.socketId : '';
+            const rawName = typeof v === 'object' ? v.name : v;
+            const vName = escapeHTML(rawName);
+            const vType = escapeHTML(typeof v === 'object' && v.type ? v.type : 'TAB_SWITCH');
+            const vTime = escapeHTML(typeof v === 'object' && v.timeStr ? v.timeStr : '');
+            const vDetails = escapeHTML(typeof v === 'object' && v.details ? v.details : '');
+            const vSocketId = escapeHTML(typeof v === 'object' && v.socketId ? v.socketId : '');
 
             let badgeColor = '#ef4444';
             if (vType === 'SUSPICIOUS_SYSTEM_UI') badgeColor = '#f59e0b';
@@ -929,19 +942,21 @@ function renderTeams() {
 
     sortedTeams.forEach(team => {
         const li = document.createElement('li');
-        const points = team.points || 0;
+        const points = Number(team.points) || 0;
+        const safeId = escapeHTML(team.socketId);
+        const safeName = escapeHTML(team.name);
         li.innerHTML = `
             <div style="display:flex; justify-content:space-between; align-items:center; width:100%;">
                 <div style="display:flex; align-items:center; gap:0.5rem;">
-                    <button class="btn warning-btn" style="padding:0.3rem 0.5rem; font-size:0.7rem; background:#ef4444;" onclick="requestDisqualify('${team.socketId}', '${team.name}')">❌</button>
-                    <span>${team.name}</span>
+                    <button class="btn warning-btn" style="padding:0.3rem 0.5rem; font-size:0.7rem; background:#ef4444;" onclick="requestDisqualify('${safeId}', '${safeName}')">❌</button>
+                    <span>${safeName}</span>
                 </div>
                 <div class="pt-controls">
-                    <button class="pt-btn" onclick="updatePoints('${team.socketId}', -1)">-</button>
+                    <button class="pt-btn" onclick="updatePoints('${safeId}', -1)">-</button>
                     <div class="pt-score">${points}</div>
-                    <button class="quick-pt-btn" onclick="updatePoints('${team.socketId}', 10)">+10<br><span style="font-size:0.6rem;opacity:0.8;">(No pass)</span></button>
-                    <button class="quick-pt-btn" onclick="updatePoints('${team.socketId}', 7)">+7<br><span style="font-size:0.6rem;opacity:0.8;">(1st pass)</span></button>
-                    <button class="quick-pt-btn" onclick="updatePoints('${team.socketId}', 4)">+4<br><span style="font-size:0.6rem;opacity:0.8;">(Second pass)</span></button>
+                    <button class="quick-pt-btn" onclick="updatePoints('${safeId}', 10)">+10<br><span style="font-size:0.6rem;opacity:0.8;">(No pass)</span></button>
+                    <button class="quick-pt-btn" onclick="updatePoints('${safeId}', 7)">+7<br><span style="font-size:0.6rem;opacity:0.8;">(1st pass)</span></button>
+                    <button class="quick-pt-btn" onclick="updatePoints('${safeId}', 4)">+4<br><span style="font-size:0.6rem;opacity:0.8;">(Second pass)</span></button>
                 </div>
             </div>
         `;
@@ -952,7 +967,7 @@ function renderTeams() {
 // Host: Manual Disqualify Flow
 window.requestDisqualify = (socketId, name) => {
     pendingDisqualifySocketId = socketId;
-    if (disqualifyMsg) disqualifyMsg.innerHTML = `Are you sure you want to disqualify <strong>'${name}'</strong>?`;
+    if (disqualifyMsg) disqualifyMsg.innerHTML = `Are you sure you want to disqualify <strong>'${escapeHTML(name)}'</strong>?`;
 
     // Freeze room while host decides
     socket.emit('toggle_manual_freeze', { code: currentRoomCode, freeze: true });
@@ -1019,8 +1034,8 @@ function renderBuzzesList(buzzes, container) {
 
         li.innerHTML = `
             <span class="rank">${rankStr}</span>
-            <span class="team-name" style="flex:1; margin-left:1rem;">${buzz.name}</span>
-            <span class="time-diff" style="font-family:monospace; font-size:0.75rem; color:var(--primary-color); opacity:0.8;">${buzz.timeStr}</span>
+            <span class="team-name" style="flex:1; margin-left:1rem;">${escapeHTML(buzz.name)}</span>
+            <span class="time-diff" style="font-family:monospace; font-size:0.75rem; color:var(--primary-color); opacity:0.8;">${escapeHTML(buzz.timeStr)}</span>
         `;
 
         container.appendChild(li);
@@ -1081,8 +1096,8 @@ function renderHostLeaderboard(teamsWithPoints) {
         div.className = 'points-pill';
         div.innerHTML = `
             <div style="display:flex; justify-content:space-between; width:100%; align-items:center;">
-                <span style="font-weight:600;">${team.name}</span>
-                <span class="score" style="margin-left:1rem;">${team.points}</span>
+                <span style="font-weight:600;">${escapeHTML(team.name)}</span>
+                <span class="score" style="margin-left:1rem;">${Number(team.points) || 0}</span>
             </div>
         `;
         hostLeaderboardSummary.appendChild(div);

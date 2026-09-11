@@ -3,11 +3,32 @@ const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
 const cors = require('cors');
+const crypto = require('crypto');
 
 const app = express();
-app.use(cors());
 
-// Time sync for nanosecond precision
+// Production Security Hardening & Configurable CORS
+const allowedOrigin = process.env.ALLOWED_ORIGIN || true;
+app.use(cors({ origin: allowedOrigin }));
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    next();
+});
+
+// Serve static files from the Frontend directory
+app.use(express.static(path.join(__dirname, '../Frontend')));
+
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: allowedOrigin,
+    }
+});
+
+// Time sync for microsecond precision display
 const startHrTime = process.hrtime.bigint();
 const startDate = Date.now();
 
@@ -31,448 +52,618 @@ function getMicrosecondTime() {
     return `${h}:${m}:${s}:${millis}:${micros}`;
 }
 
-// Serve static files from the Frontend directory
-app.use(express.static(path.join(__dirname, '../Frontend')));
-
-const server = http.createServer(app);
-const io = new Server(server, {
-    cors: {
-        origin: '*',
-    }
-});
-
-// App State
-// rooms: { roomId: { host: socketId, groups: { socketId: name }, buzzes: [ { socketId, name, timestamp } ], buzzesAllowed: true } }
+// App State Management
+// rooms: { roomId: { host: socketId, groups: {}, buzzes: [], buzzedSockets: Set, buzzesAllowed: false, manualFreeze: false, disqualified: [], activeViolations: {}, pendingRequests: {} } }
 const rooms = {};
+const socketRoomMap = new Map(); // socket.id -> roomCode (O(1) disconnect lookup)
+const socketRoleMap = new Map(); // socket.id -> 'host' | 'participant'
 
-// Helper to generate a random 4 letter code
+// Per-Socket Rate Limiting System (In-Memory, No Redis)
+const RATE_LIMIT_WINDOW_MS = 1000;
+const MAX_EVENTS_PER_WINDOW = 15;
+const socketRateLimits = new Map(); // socket.id -> { count, startTime }
+
+function isRateLimited(socketId) {
+    const now = Date.now();
+    let limit = socketRateLimits.get(socketId);
+    if (!limit || (now - limit.startTime > RATE_LIMIT_WINDOW_MS)) {
+        limit = { count: 1, startTime: now };
+        socketRateLimits.set(socketId, limit);
+        return false;
+    }
+    limit.count++;
+    return limit.count > MAX_EVENTS_PER_WINDOW;
+}
+
+function cleanSocketState(socketId) {
+    socketRateLimits.delete(socketId);
+    const roomCode = socketRoomMap.get(socketId);
+    socketRoomMap.delete(socketId);
+    socketRoleMap.delete(socketId);
+    return roomCode;
+}
+
+// Cryptographically Strong 4-Letter Room Code Generator
 function generateRoomCode() {
-    let result = '';
     const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    let result = '';
     for (let i = 0; i < 4; i++) {
-        result += characters.charAt(Math.floor(Math.random() * characters.length));
+        const randomIndex = crypto.randomInt(0, characters.length);
+        result += characters.charAt(randomIndex);
     }
     return result;
 }
 
+// Input Validation Helpers
+function isValidRoomCode(code) {
+    return typeof code === 'string' && /^[A-Z]{4}$/.test(code.trim().toUpperCase());
+}
+
+function isValidName(name) {
+    if (typeof name !== 'string') return false;
+    const trimmed = name.trim();
+    return trimmed.length > 0 && trimmed.length <= 30;
+}
+
+function isHost(socket, room) {
+    return !!(room && room.host === socket.id);
+}
+
+// Socket.IO Real-Time Communication Engine
 io.on('connection', (socket) => {
-    console.log('A user connected:', socket.id);
 
     // Host creates a room
     socket.on('create_room', () => {
-        let code;
-        do {
-            code = generateRoomCode();
-        } while (rooms[code]);
+        try {
+            if (isRateLimited(socket.id)) return;
 
-        rooms[code] = {
-            host: socket.id,
-            groups: {}, // maps socketId -> { name, points }
-            buzzes: [],
-            buzzesAllowed: false, // Start with buzzers disabled
-            manualFreeze: false, // Manual override by host
-            disqualified: [],
-            activeViolations: {}, // maps socketId -> name
-            pendingRequests: {} // maps socketId -> name
-        };
+            let code;
+            let attempts = 0;
+            do {
+                code = generateRoomCode();
+                attempts++;
+            } while (rooms[code] && attempts < 100);
 
-        socket.join(code);
-        socket.emit('room_created', code);
-        console.log(`Room created: ${code} by host: ${socket.id}`);
+            if (rooms[code]) {
+                socket.emit('error', 'Unable to generate room code. Please try again.');
+                return;
+            }
+
+            rooms[code] = {
+                host: socket.id,
+                groups: {}, // socketId -> { name, points, lastHeartbeat, visibilityState, hasFocus }
+                buzzes: [], // array of { socketId, name, timeStr }
+                buzzedSockets: new Set(), // Set of socketIds for O(1) membership checking
+                buzzesAllowed: false,
+                manualFreeze: false,
+                disqualified: [], // Array of disqualified names
+                activeViolations: {}, // socketId -> violation details
+                pendingRequests: {} // socketId -> name
+            };
+
+            socketRoomMap.set(socket.id, code);
+            socketRoleMap.set(socket.id, 'host');
+            socket.join(code);
+            socket.emit('room_created', code);
+        } catch (err) {
+            console.error('Error in create_room:', err);
+            socket.emit('error', 'Internal server error creating room.');
+        }
     });
 
     // Group starts joining a room (request)
-    socket.on('join_room', ({ code, name }) => {
-        if (!code || typeof code !== 'string' || !name || typeof name !== 'string') {
-            socket.emit('error', 'Invalid room code or group name.');
-            return;
-        }
-        code = code.trim().toUpperCase();
-        name = name.trim();
-        if (!code || !name) {
-            socket.emit('error', 'Room code and group name are required.');
-            return;
-        }
-        const room = rooms[code];
-        if (!room) {
-            socket.emit('error', 'Room not found.');
-            return;
-        }
+    socket.on('join_room', (payload) => {
+        try {
+            if (isRateLimited(socket.id)) return;
+            if (!payload || typeof payload !== 'object') {
+                socket.emit('error', 'Invalid payload.');
+                return;
+            }
 
-        const existingNames = Object.values(room.groups).map(g => g.name);
-        const pendingNames = Object.values(room.pendingRequests);
-        if (existingNames.includes(name) || pendingNames.includes(name)) {
-            socket.emit('error', 'Name already taken or pending approval.');
-            return;
+            let { code, name } = payload;
+            if (!isValidRoomCode(code) || !isValidName(name)) {
+                socket.emit('error', 'Room code must be 4 letters and name must be 1-30 characters.');
+                return;
+            }
+
+            code = code.trim().toUpperCase();
+            name = name.trim();
+
+            const room = rooms[code];
+            if (!room) {
+                socket.emit('error', 'Room not found.');
+                return;
+            }
+
+            // Disqualification Check: Prevent disqualified teams from re-joining
+            if (room.disqualified.includes(name)) {
+                socket.emit('error', 'You have been disqualified from this room by the host.');
+                return;
+            }
+
+            const existingNames = Object.values(room.groups).map(g => g.name);
+            const pendingNames = Object.values(room.pendingRequests);
+            if (existingNames.includes(name) || pendingNames.includes(name)) {
+                socket.emit('error', 'Name already taken or pending approval.');
+                return;
+            }
+
+            socketRoomMap.set(socket.id, code);
+            socketRoleMap.set(socket.id, 'participant');
+
+            // Add to pending
+            room.pendingRequests[socket.id] = name;
+
+            // Freeze room for all clients while host reviews join request
+            const allPendingNames = Object.values(room.pendingRequests);
+            const violatorNames = Object.values(room.activeViolations).map(v => v.name || v);
+            io.to(code).emit('global_freeze', {
+                pendingNames: allPendingNames,
+                violatorNames,
+                manualFreeze: room.manualFreeze
+            });
+
+            // Target host-only events for privacy & performance
+            io.to(room.host).emit('join_request', { socketId: socket.id, name });
+            io.to(room.host).emit('requests_update', Object.entries(room.pendingRequests).map(([id, n]) => ({ socketId: id, name: n })));
+            socket.emit('waiting_for_approval');
+        } catch (err) {
+            console.error('Error in join_room:', err);
+            socket.emit('error', 'Internal server error joining room.');
         }
-
-        // Add to pending
-        room.pendingRequests[socket.id] = name;
-
-        // Freeze everyone while host reviews join request (including the new one)
-        const allPendingNames = Object.values(room.pendingRequests);
-        const violatorNames = Object.values(room.activeViolations);
-        io.to(code).emit('global_freeze', {
-            pendingNames: allPendingNames,
-            violatorNames,
-            manualFreeze: room.manualFreeze
-        });
-
-        // Notify host
-        io.to(room.host).emit('join_request', { socketId: socket.id, name });
-        io.to(room.host).emit('requests_update', Object.entries(room.pendingRequests).map(([id, n]) => ({ socketId: id, name: n })));
-        socket.emit('waiting_for_approval');
-        console.log(`Join request from ${name} (${socket.id}) for room ${code}`);
     });
 
     // Host resolves join request
-    socket.on('resolve_join', ({ code, targetSocketId, action }) => {
-        if (!code || typeof code !== 'string') return;
-        code = code.toUpperCase();
-        const room = rooms[code];
-        if (!room || room.host !== socket.id) return;
+    socket.on('resolve_join', (payload) => {
+        try {
+            if (isRateLimited(socket.id)) return;
+            if (!payload || typeof payload !== 'object') return;
 
-        const name = room.pendingRequests[targetSocketId];
-        if (!name) return;
+            let { code, targetSocketId, action } = payload;
+            if (!isValidRoomCode(code) || typeof targetSocketId !== 'string' || typeof action !== 'string') return;
+            code = code.trim().toUpperCase();
 
-        if (action === 'allow') {
-            room.groups[targetSocketId] = { name, points: 0 };
-            const targetSocket = io.sockets.sockets.get(targetSocketId);
-            if (targetSocket) {
-                targetSocket.join(code);
-                targetSocket.emit('joined_room', { code, name, buzzesAllowed: room.buzzesAllowed });
-
-                // Notify host that group joined successfully
-                io.to(room.host).emit('group_joined', { socketId: targetSocketId, name, points: 0 });
-
-                // Broadcast initial points
-                io.to(code).emit('points_update', Object.entries(room.groups).map(([id, g]) => ({ socketId: id, name: g.name, points: g.points })));
+            const room = rooms[code];
+            if (!isHost(socket, room)) {
+                socket.emit('error', 'Unauthorized: Only room host can perform this action.');
+                return;
             }
-        } else {
-            const targetSocket = io.sockets.sockets.get(targetSocketId);
-            if (targetSocket) {
-                targetSocket.emit('error', 'Host rejected your join request.');
-            }
-        }
 
-        delete room.pendingRequests[targetSocketId];
-        delete room.activeViolations[targetSocketId];
+            const name = room.pendingRequests[targetSocketId];
+            if (!name) return;
 
-        // Check if anything else is keeping the room frozen
-        const remainingPending = Object.values(room.pendingRequests);
-        const remainingViolating = Object.values(room.activeViolations);
+            if (action === 'allow') {
+                room.groups[targetSocketId] = {
+                    name,
+                    points: 0,
+                    lastHeartbeat: Date.now(),
+                    visibilityState: 'visible',
+                    hasFocus: true
+                };
 
-        if (remainingPending.length > 0 || remainingViolating.length > 0 || room.manualFreeze) {
-            io.to(code).emit('global_freeze', {
-                pendingNames: remainingPending,
-                violatorNames: remainingViolating,
-                manualFreeze: room.manualFreeze
-            });
-            io.to(room.host).emit('tab_violation_alert', {
-                violations: Object.entries(room.activeViolations).map(([id, name]) => ({ socketId: id, name }))
-            });
-        } else {
-            io.to(code).emit('violation_resolved', { action: 'join_resolved', targetSocketId });
-            io.to(room.host).emit('tab_violation_alert', { violations: [] });
-        }
+                const targetSocket = io.sockets.sockets.get(targetSocketId);
+                if (targetSocket) {
+                    targetSocket.join(code);
+                    targetSocket.emit('joined_room', { code, name, buzzesAllowed: room.buzzesAllowed });
 
-        // Update host requests list
-        io.to(room.host).emit('requests_update', Object.entries(room.pendingRequests).map(([id, n]) => ({ socketId: id, name: n })));
-    });
+                    // Notify host specifically
+                    io.to(room.host).emit('group_joined', { socketId: targetSocketId, name, points: 0 });
 
-    // Group presses the buzzer
-    socket.on('buzz', (code) => {
-        if (!code || typeof code !== 'string') return;
-        code = code.toUpperCase();
-        const room = rooms[code];
-        if (!room) return;
-
-        // Check if buzzers are allowed and user hasn't buzzed yet
-        if (!room.buzzesAllowed) return;
-
-        const hasBuzzed = room.buzzes.some(b => b.socketId === socket.id);
-        if (hasBuzzed) return;
-
-        const group = room.groups[socket.id];
-        if (!group) return; // Not a registered group
-
-        // SERVER-SIDE BUZZ PROTECTION: Reject buzz if participant has active violation
-        if (room.activeViolations[socket.id]) {
-            socket.emit('buzz_rejected', {
-                reason: 'VIOLATION_ACTIVE',
-                message: 'You have an active violation. Host must resolve your status before you can buzz.'
-            });
-            return;
-        }
-
-        const name = group.name;
-
-        const buzzData = {
-            socketId: socket.id,
-            name: name,
-            timeStr: getMicrosecondTime()
-        };
-
-        room.buzzes.push(buzzData);
-
-        // Let the user know they buzzed successfully
-        socket.emit('buzz_registered', { rank: room.buzzes.length });
-
-        // Broadcast all buzzes to the entire room
-        io.to(code).emit('buzzes_update', room.buzzes);
-    });
-
-    // Host resets buzzers
-    socket.on('reset_buzzers', (code) => {
-        if (!code || typeof code !== 'string') return;
-        code = code.toUpperCase();
-        const room = rooms[code];
-
-        // Ensure only host can do this
-        if (!room || room.host !== socket.id) return;
-
-        room.buzzes = [];
-        room.buzzesAllowed = false; // Reset puts buzzers into OFF mode
-
-        // Notify all to clear their buzzer lists
-        io.to(code).emit('buzzes_update', room.buzzes);
-
-        // Broadcast buzzer state turned OFF to all
-        io.to(code).emit('buzzer_state', { active: false });
-
-        // Notify all groups to reset their buzzer UI
-        io.to(code).emit('reset', { buzzesAllowed: false });
-        console.log(`Buzzers reset to OFF for room ${code}`);
-    });
-
-    // Host toggles buzzers
-    socket.on('toggle_buzzers', ({ code, active }) => {
-        if (!code || typeof code !== 'string') return;
-        code = code.toUpperCase();
-        const room = rooms[code];
-        if (!room || room.host !== socket.id) return;
-
-        room.buzzesAllowed = active;
-        if (!active) {
-            room.buzzes = []; // optionally clear when disabling
-            io.to(code).emit('buzzes_update', room.buzzes);
-        }
-        io.to(code).emit('buzzer_state', { active });
-        console.log(`Buzzers toggled for room ${code}: ${active}`);
-    });
-
-    // Host toggles manual freeze
-    socket.on('toggle_manual_freeze', ({ code, freeze }) => {
-        if (!code || typeof code !== 'string') return;
-        code = code.toUpperCase();
-        const room = rooms[code];
-        if (!room || room.host !== socket.id) return;
-
-        room.manualFreeze = freeze;
-        if (freeze) {
-            const pendingNames = Object.values(room.pendingRequests);
-            const violatorNames = Object.values(room.activeViolations);
-            io.to(code).emit('global_freeze', {
-                pendingNames,
-                violatorNames,
-                manualFreeze: true
-            });
-        } else {
-            const pendingNames = Object.values(room.pendingRequests);
-            const violatorNames = Object.values(room.activeViolations);
-            if (pendingNames.length === 0 && violatorNames.length === 0) {
-                io.to(code).emit('violation_resolved', { action: 'manual_unfreeze' });
+                    // Broadcast updated points to room
+                    io.to(code).emit('points_update', Object.entries(room.groups).map(([id, g]) => ({ socketId: id, name: g.name, points: g.points })));
+                }
             } else {
+                const targetSocket = io.sockets.sockets.get(targetSocketId);
+                if (targetSocket) {
+                    targetSocket.emit('error', 'Host rejected your join request.');
+                }
+            }
+
+            delete room.pendingRequests[targetSocketId];
+            delete room.activeViolations[targetSocketId];
+
+            // Evaluate room freeze status
+            const remainingPending = Object.values(room.pendingRequests);
+            const remainingViolators = Object.values(room.activeViolations);
+            const remainingViolatingNames = remainingViolators.map(v => v.name || v);
+
+            if (remainingPending.length > 0 || remainingViolatingNames.length > 0 || room.manualFreeze) {
                 io.to(code).emit('global_freeze', {
-                    pendingNames,
-                    violatorNames,
-                    manualFreeze: false
+                    pendingNames: remainingPending,
+                    violatorNames: remainingViolatingNames,
+                    manualFreeze: room.manualFreeze
                 });
-            }
-        }
-        socket.emit('manual_freeze_status', { freeze });
-    });
-
-    // Host updates points
-    socket.on('update_points', ({ code, targetSocketId, delta }) => {
-        if (!code || typeof code !== 'string') return;
-        code = code.toUpperCase();
-        const room = rooms[code];
-        if (!room || room.host !== socket.id) return;
-
-        const deltaVal = parseInt(delta, 10);
-        if (isNaN(deltaVal)) return;
-
-        if (room.groups[targetSocketId]) {
-            room.groups[targetSocketId].points += deltaVal;
-            io.to(code).emit('points_update', Object.entries(room.groups).map(([id, g]) => ({ socketId: id, name: g.name, points: g.points })));
-        }
-    });
-
-    // Participant Heartbeat Handler
-    socket.on('participant_heartbeat', ({ code, groupName, visibilityState, hasFocus }) => {
-        if (!code || typeof code !== 'string') return;
-        code = code.toUpperCase();
-        const room = rooms[code];
-        if (!room) return;
-
-        const group = room.groups[socket.id];
-        if (group) {
-            group.lastHeartbeat = Date.now();
-            group.visibilityState = visibilityState;
-            group.hasFocus = hasFocus;
-        }
-    });
-
-    // Participant Returned Handler
-    socket.on('participant_returned', ({ code }) => {
-        if (!code || typeof code !== 'string') return;
-        code = code.toUpperCase();
-        const room = rooms[code];
-        if (!room) return;
-
-        const group = room.groups[socket.id];
-        if (group) {
-            if (room.activeViolations[socket.id]) {
-                room.activeViolations[socket.id].status = 'Returned to game (Waiting for Host)';
-            }
-            if (room.host) {
-                io.to(room.host).emit('participant_returned_alert', {
-                    socketId: socket.id,
-                    name: group.name,
-                    timestamp: Date.now()
-                });
-                io.to(room.host).emit('tab_violation_alert', {
-                    violations: Object.values(room.activeViolations)
-                });
-            }
-        }
-    });
-
-    socket.on('tab_violation', (data) => {
-        if (!data) return;
-        let code = typeof data === 'string' ? data : data.code;
-        if (!code || typeof code !== 'string') return;
-        code = code.toUpperCase();
-        const room = rooms[code];
-        if (!room) return;
-
-        const group = room.groups[socket.id];
-        const groupName = group ? group.name : room.pendingRequests[socket.id];
-        if (groupName) {
-            const type = typeof data === 'object' && data.type ? data.type : 'TAB_SWITCH';
-            const date = new Date();
-            const timeStr = date.toTimeString().split(' ')[0];
-
-            room.activeViolations[socket.id] = {
-                socketId: socket.id,
-                name: groupName,
-                type: type,
-                timeStr: timeStr,
-                fullscreen: typeof data === 'object' ? !!data.fullscreen : false,
-                visibilityState: typeof data === 'object' && data.visibilityState ? data.visibilityState : 'hidden',
-                hasFocus: typeof data === 'object' && typeof data.hasFocus === 'boolean' ? data.hasFocus : false,
-                details: typeof data === 'object' && data.details ? data.details : 'Participant switched focus or exited page',
-                status: 'Waiting for re-entry',
-                timestamp: Date.now()
-            };
-
-            // Broadcast ALL reasons currently freezing the room
-            const violatorNames = Object.values(room.activeViolations).map(v => v.name || v);
-            const pendingNames = Object.values(room.pendingRequests);
-            io.to(code).emit('global_freeze', {
-                violatorNames,
-                pendingNames,
-                manualFreeze: room.manualFreeze
-            });
-
-            // Specifically notify host with the full list of rich violation details
-            io.to(room.host).emit('tab_violation_alert', {
-                violations: Object.values(room.activeViolations)
-            });
-        }
-    });
-
-    // Host Resolves Violation
-    socket.on('resolve_violation', ({ code, targetSocketId, action }) => {
-        if (!code || typeof code !== 'string') return;
-        code = code.toUpperCase();
-        const room = rooms[code];
-        if (!room || room.host !== socket.id) return;
-
-        if (action === 'disqualify') {
-            const group = room.groups[targetSocketId];
-            if (group) {
-                // Add to disqualified list
-                room.disqualified.push(group.name);
-                delete room.groups[targetSocketId];
-
-                // Remove their buzzes
-                room.buzzes = room.buzzes.filter(b => b.socketId !== targetSocketId);
-
-                // Broadcast updates to entire room
-                io.to(code).emit('points_update', Object.entries(room.groups).map(([id, g]) => ({ socketId: id, name: g.name, points: g.points })));
-                io.to(code).emit('buzzes_update', room.buzzes);
-                io.to(room.host).emit('disqualified_update', room.disqualified);
-            }
-        }
-
-        // Remove from active tracking
-        delete room.activeViolations[targetSocketId];
-
-        const remainingViolators = Object.values(room.activeViolations);
-        const remainingViolatorNames = remainingViolators.map(v => v.name || v);
-        const remainingPendingNames = Object.values(room.pendingRequests);
-
-        if (remainingViolatorNames.length > 0 || remainingPendingNames.length > 0 || room.manualFreeze) {
-            // Still frozen for some reason
-            io.to(code).emit('global_freeze', {
-                violatorNames: remainingViolatorNames,
-                pendingNames: remainingPendingNames,
-                manualFreeze: room.manualFreeze
-            });
-
-            // If there were violators, update host's violation panel
-            if (remainingViolators.length > 0) {
                 io.to(room.host).emit('tab_violation_alert', {
                     violations: remainingViolators
                 });
             } else {
-                // If NO violators but still frozen (members pending or manual), close violation alert
+                io.to(code).emit('violation_resolved', { action: 'join_resolved', targetSocketId });
                 io.to(room.host).emit('tab_violation_alert', { violations: [] });
             }
-        } else {
-            // All reasons cleared (no violators AND no pending requests AND no manual freeze)
-            io.to(code).emit('violation_resolved', { action, targetSocketId });
-            io.to(room.host).emit('tab_violation_alert', { violations: [] });
-        }
 
-        // Tell the specific violator their fate
-        io.to(targetSocketId).emit('individual_result', action);
+            io.to(room.host).emit('requests_update', Object.entries(room.pendingRequests).map(([id, n]) => ({ socketId: id, name: n })));
+        } catch (err) {
+            console.error('Error in resolve_join:', err);
+        }
+    });
+
+    // Group presses the buzzer (Ultra-low overhead critical path)
+    socket.on('buzz', (rawCode) => {
+        try {
+            if (isRateLimited(socket.id)) return;
+            if (!isValidRoomCode(rawCode)) return;
+            const code = rawCode.trim().toUpperCase();
+            const room = rooms[code];
+            if (!room) return;
+
+            // Check if buzzers are allowed
+            if (!room.buzzesAllowed) return;
+
+            // O(1) Set membership check for fast duplicate rejection
+            if (room.buzzedSockets.has(socket.id)) return;
+
+            const group = room.groups[socket.id];
+            if (!group) return; // Not a registered group
+
+            // Server-side active violation check
+            if (room.activeViolations[socket.id]) {
+                socket.emit('buzz_rejected', {
+                    reason: 'VIOLATION_ACTIVE',
+                    message: 'You have an active violation. Host must resolve your status before you can buzz.'
+                });
+                return;
+            }
+
+            // Disqualification protection
+            if (room.disqualified.includes(group.name)) {
+                socket.emit('buzz_rejected', {
+                    reason: 'DISQUALIFIED',
+                    message: 'You are disqualified from this room.'
+                });
+                return;
+            }
+
+            room.buzzedSockets.add(socket.id);
+            const buzzData = {
+                socketId: socket.id,
+                name: group.name,
+                timeStr: getMicrosecondTime()
+            };
+
+            room.buzzes.push(buzzData);
+
+            // Acknowledge individual user buzz rank
+            socket.emit('buzz_registered', { rank: room.buzzes.length });
+
+            // Broadcast authoritative order to room
+            io.to(code).emit('buzzes_update', room.buzzes);
+        } catch (err) {
+            console.error('Error in buzz:', err);
+        }
+    });
+
+    // Host resets buzzers
+    socket.on('reset_buzzers', (rawCode) => {
+        try {
+            if (isRateLimited(socket.id)) return;
+            if (!isValidRoomCode(rawCode)) return;
+            const code = rawCode.trim().toUpperCase();
+            const room = rooms[code];
+
+            if (!isHost(socket, room)) {
+                socket.emit('error', 'Unauthorized: Only room host can perform this action.');
+                return;
+            }
+
+            room.buzzes = [];
+            room.buzzedSockets.clear();
+            room.buzzesAllowed = false;
+
+            io.to(code).emit('buzzes_update', room.buzzes);
+            io.to(code).emit('buzzer_state', { active: false });
+            io.to(code).emit('reset', { buzzesAllowed: false });
+        } catch (err) {
+            console.error('Error in reset_buzzers:', err);
+        }
+    });
+
+    // Host toggles buzzers
+    socket.on('toggle_buzzers', (payload) => {
+        try {
+            if (isRateLimited(socket.id)) return;
+            if (!payload || typeof payload !== 'object') return;
+            let { code, active } = payload;
+            if (!isValidRoomCode(code) || typeof active !== 'boolean') return;
+            code = code.trim().toUpperCase();
+            const room = rooms[code];
+
+            if (!isHost(socket, room)) {
+                socket.emit('error', 'Unauthorized: Only room host can perform this action.');
+                return;
+            }
+
+            room.buzzesAllowed = active;
+            if (!active) {
+                room.buzzes = [];
+                room.buzzedSockets.clear();
+                io.to(code).emit('buzzes_update', room.buzzes);
+            }
+            io.to(code).emit('buzzer_state', { active });
+        } catch (err) {
+            console.error('Error in toggle_buzzers:', err);
+        }
+    });
+
+    // Host toggles manual freeze
+    socket.on('toggle_manual_freeze', (payload) => {
+        try {
+            if (isRateLimited(socket.id)) return;
+            if (!payload || typeof payload !== 'object') return;
+            let { code, freeze } = payload;
+            if (!isValidRoomCode(code) || typeof freeze !== 'boolean') return;
+            code = code.trim().toUpperCase();
+            const room = rooms[code];
+
+            if (!isHost(socket, room)) {
+                socket.emit('error', 'Unauthorized: Only room host can perform this action.');
+                return;
+            }
+
+            room.manualFreeze = freeze;
+            const pendingNames = Object.values(room.pendingRequests);
+            const violatorNames = Object.values(room.activeViolations).map(v => v.name || v);
+
+            if (freeze) {
+                io.to(code).emit('global_freeze', {
+                    pendingNames,
+                    violatorNames,
+                    manualFreeze: true
+                });
+            } else {
+                if (pendingNames.length === 0 && violatorNames.length === 0) {
+                    io.to(code).emit('violation_resolved', { action: 'manual_unfreeze' });
+                } else {
+                    io.to(code).emit('global_freeze', {
+                        pendingNames,
+                        violatorNames,
+                        manualFreeze: false
+                    });
+                }
+            }
+            socket.emit('manual_freeze_status', { freeze });
+        } catch (err) {
+            console.error('Error in toggle_manual_freeze:', err);
+        }
+    });
+
+    // Host updates points (strict integer check)
+    socket.on('update_points', (payload) => {
+        try {
+            if (isRateLimited(socket.id)) return;
+            if (!payload || typeof payload !== 'object') return;
+            let { code, targetSocketId, delta } = payload;
+            if (!isValidRoomCode(code) || typeof targetSocketId !== 'string') return;
+            code = code.trim().toUpperCase();
+            const room = rooms[code];
+
+            if (!isHost(socket, room)) {
+                socket.emit('error', 'Unauthorized: Only room host can perform this action.');
+                return;
+            }
+
+            const deltaVal = Number(delta);
+            if (!Number.isInteger(deltaVal) || Math.abs(deltaVal) > 1000) {
+                socket.emit('error', 'Invalid point delta amount.');
+                return;
+            }
+
+            if (room.groups[targetSocketId]) {
+                room.groups[targetSocketId].points += deltaVal;
+                io.to(code).emit('points_update', Object.entries(room.groups).map(([id, g]) => ({ socketId: id, name: g.name, points: g.points })));
+            }
+        } catch (err) {
+            console.error('Error in update_points:', err);
+        }
+    });
+
+    // Participant Heartbeat Handler
+    socket.on('participant_heartbeat', (payload) => {
+        try {
+            if (isRateLimited(socket.id)) return;
+            if (!payload || typeof payload !== 'object') return;
+            let { code, visibilityState, hasFocus } = payload;
+            if (!isValidRoomCode(code)) return;
+            code = code.trim().toUpperCase();
+            const room = rooms[code];
+            if (!room) return;
+
+            const group = room.groups[socket.id];
+            if (group) {
+                group.lastHeartbeat = Date.now();
+                group.visibilityState = typeof visibilityState === 'string' ? visibilityState : 'visible';
+                group.hasFocus = typeof hasFocus === 'boolean' ? hasFocus : true;
+            }
+        } catch (err) {
+            console.error('Error in participant_heartbeat:', err);
+        }
+    });
+
+    // Participant Returned Handler
+    socket.on('participant_returned', (payload) => {
+        try {
+            if (isRateLimited(socket.id)) return;
+            if (!payload || typeof payload !== 'object') return;
+            let { code } = payload;
+            if (!isValidRoomCode(code)) return;
+            code = code.trim().toUpperCase();
+            const room = rooms[code];
+            if (!room) return;
+
+            const group = room.groups[socket.id];
+            if (group) {
+                if (room.activeViolations[socket.id]) {
+                    room.activeViolations[socket.id].status = 'Returned to game (Waiting for Host)';
+                }
+                if (room.host) {
+                    io.to(room.host).emit('participant_returned_alert', {
+                        socketId: socket.id,
+                        name: group.name,
+                        timestamp: Date.now()
+                    });
+                    io.to(room.host).emit('tab_violation_alert', {
+                        violations: Object.values(room.activeViolations)
+                    });
+                }
+            }
+        } catch (err) {
+            console.error('Error in participant_returned:', err);
+        }
+    });
+
+    // Participant Tab/Visibility Violation Handler
+    socket.on('tab_violation', (data) => {
+        try {
+            if (isRateLimited(socket.id)) return;
+            if (!data) return;
+            let code = typeof data === 'string' ? data : data.code;
+            if (!isValidRoomCode(code)) return;
+            code = code.trim().toUpperCase();
+            const room = rooms[code];
+            if (!room) return;
+
+            const group = room.groups[socket.id];
+            const groupName = group ? group.name : room.pendingRequests[socket.id];
+            if (groupName) {
+                const type = typeof data === 'object' && typeof data.type === 'string' ? data.type : 'TAB_SWITCH';
+                const date = new Date();
+                const timeStr = date.toTimeString().split(' ')[0];
+
+                room.activeViolations[socket.id] = {
+                    socketId: socket.id,
+                    name: groupName,
+                    type: type,
+                    timeStr: timeStr,
+                    fullscreen: typeof data === 'object' ? !!data.fullscreen : false,
+                    visibilityState: typeof data === 'object' && typeof data.visibilityState === 'string' ? data.visibilityState : 'hidden',
+                    hasFocus: typeof data === 'object' && typeof data.hasFocus === 'boolean' ? data.hasFocus : false,
+                    details: typeof data === 'object' && typeof data.details === 'string' ? data.details.slice(0, 100) : 'Participant switched focus or exited page',
+                    status: 'Waiting for re-entry',
+                    timestamp: Date.now()
+                };
+
+                const violatorNames = Object.values(room.activeViolations).map(v => v.name || v);
+                const pendingNames = Object.values(room.pendingRequests);
+                io.to(code).emit('global_freeze', {
+                    violatorNames,
+                    pendingNames,
+                    manualFreeze: room.manualFreeze
+                });
+
+                // Host-only alert
+                io.to(room.host).emit('tab_violation_alert', {
+                    violations: Object.values(room.activeViolations)
+                });
+            }
+        } catch (err) {
+            console.error('Error in tab_violation:', err);
+        }
+    });
+
+    // Host Resolves Violation
+    socket.on('resolve_violation', (payload) => {
+        try {
+            if (isRateLimited(socket.id)) return;
+            if (!payload || typeof payload !== 'object') return;
+            let { code, targetSocketId, action } = payload;
+            if (!isValidRoomCode(code) || typeof targetSocketId !== 'string' || typeof action !== 'string') return;
+            code = code.trim().toUpperCase();
+            const room = rooms[code];
+
+            if (!isHost(socket, room)) {
+                socket.emit('error', 'Unauthorized: Only room host can perform this action.');
+                return;
+            }
+
+            if (action === 'disqualify') {
+                const group = room.groups[targetSocketId];
+                if (group) {
+                    if (!room.disqualified.includes(group.name)) {
+                        room.disqualified.push(group.name);
+                    }
+                    delete room.groups[targetSocketId];
+
+                    room.buzzes = room.buzzes.filter(b => b.socketId !== targetSocketId);
+                    room.buzzedSockets.delete(targetSocketId);
+
+                    io.to(code).emit('points_update', Object.entries(room.groups).map(([id, g]) => ({ socketId: id, name: g.name, points: g.points })));
+                    io.to(code).emit('buzzes_update', room.buzzes);
+                    io.to(room.host).emit('disqualified_update', room.disqualified);
+                }
+            }
+
+            delete room.activeViolations[targetSocketId];
+
+            const remainingViolators = Object.values(room.activeViolations);
+            const remainingViolatorNames = remainingViolators.map(v => v.name || v);
+            const remainingPendingNames = Object.values(room.pendingRequests);
+
+            if (remainingViolatorNames.length > 0 || remainingPendingNames.length > 0 || room.manualFreeze) {
+                io.to(code).emit('global_freeze', {
+                    violatorNames: remainingViolatorNames,
+                    pendingNames: remainingPendingNames,
+                    manualFreeze: room.manualFreeze
+                });
+
+                if (remainingViolators.length > 0) {
+                    io.to(room.host).emit('tab_violation_alert', {
+                        violations: remainingViolators
+                    });
+                } else {
+                    io.to(room.host).emit('tab_violation_alert', { violations: [] });
+                }
+            } else {
+                io.to(code).emit('violation_resolved', { action, targetSocketId });
+                io.to(room.host).emit('tab_violation_alert', { violations: [] });
+            }
+
+            io.to(targetSocketId).emit('individual_result', action);
+        } catch (err) {
+            console.error('Error in resolve_violation:', err);
+        }
     });
 
     // Host ends quiz manually
-    socket.on('room_closed_trigger', (code) => {
-        if (!code || typeof code !== 'string') return;
-        code = code.toUpperCase();
-        const room = rooms[code];
-        if (!room || room.host !== socket.id) return;
+    socket.on('room_closed_trigger', (rawCode) => {
+        try {
+            if (isRateLimited(socket.id)) return;
+            if (!isValidRoomCode(rawCode)) return;
+            const code = rawCode.trim().toUpperCase();
+            const room = rooms[code];
 
-        const finalResults = {
-            code: code,
-            teams: Object.entries(room.groups).map(([id, g]) => ({ name: g.name, points: g.points })),
-            disqualified: room.disqualified
-        };
+            if (!isHost(socket, room)) {
+                socket.emit('error', 'Unauthorized: Only room host can perform this action.');
+                return;
+            }
 
-        io.to(code).emit('room_closed', finalResults);
-        delete rooms[code];
+            const finalResults = {
+                code: code,
+                teams: Object.entries(room.groups).map(([id, g]) => ({ name: g.name, points: g.points })),
+                disqualified: room.disqualified
+            };
+
+            io.to(code).emit('room_closed', finalResults);
+            delete rooms[code];
+        } catch (err) {
+            console.error('Error in room_closed_trigger:', err);
+        }
     });
 
-    // Disconnect handling
+    // O(1) Disconnect handling using socketRoomMap
     socket.on('disconnect', () => {
-        console.log('User disconnected:', socket.id);
+        try {
+            const code = cleanSocketState(socket.id);
+            if (!code || !rooms[code]) return;
 
-        for (const code in rooms) {
             const room = rooms[code];
             if (room.host === socket.id) {
                 const finalResults = {
@@ -489,6 +680,7 @@ io.on('connection', (socket) => {
                     const groupName = room.groups[socket.id].name;
                     delete room.groups[socket.id];
                     room.buzzes = room.buzzes.filter(b => b.socketId !== socket.id);
+                    room.buzzedSockets.delete(socket.id);
                     stateChanged = true;
 
                     io.to(room.host).emit('group_left', { socketId: socket.id, name: groupName });
@@ -527,55 +719,61 @@ io.on('connection', (socket) => {
                     });
                 }
             }
+        } catch (err) {
+            console.error('Error in disconnect:', err);
         }
     });
 });
 
-// Periodic Server-Side Heartbeat / Presence Monitor (Check every 5 seconds)
+// Periodic Server-Side Heartbeat / Presence Monitor (Every 5s)
 setInterval(() => {
-    const now = Date.now();
-    for (const code in rooms) {
-        const room = rooms[code];
-        if (!room || !room.host) continue;
+    try {
+        const now = Date.now();
+        for (const code in rooms) {
+            const room = rooms[code];
+            if (!room || !room.host) continue;
 
-        let violationsUpdated = false;
-        for (const socketId in room.groups) {
-            const group = room.groups[socketId];
-            if (!group) continue;
+            let violationsUpdated = false;
+            for (const socketId in room.groups) {
+                const group = room.groups[socketId];
+                if (!group) continue;
 
-            const lastHb = group.lastHeartbeat || now;
-            // Flag if heartbeat missed for over 12 seconds
-            if (now - lastHb > 12000 && !room.activeViolations[socketId]) {
-                const date = new Date();
-                const timeStr = date.toTimeString().split(' ')[0];
-                room.activeViolations[socketId] = {
-                    socketId,
-                    name: group.name,
-                    type: 'HEARTBEAT_TIMEOUT',
-                    timeStr: timeStr,
-                    fullscreen: group.fullscreen || false,
-                    visibilityState: group.visibilityState || 'unknown',
-                    hasFocus: group.hasFocus || false,
-                    details: 'No heartbeat received from device for 12+ seconds',
-                    timestamp: now
-                };
-                violationsUpdated = true;
+                const lastHb = group.lastHeartbeat || now;
+                // Flag if heartbeat missed for over 12 seconds
+                if (now - lastHb > 12000 && !room.activeViolations[socketId]) {
+                    const date = new Date();
+                    const timeStr = date.toTimeString().split(' ')[0];
+                    room.activeViolations[socketId] = {
+                        socketId,
+                        name: group.name,
+                        type: 'HEARTBEAT_TIMEOUT',
+                        timeStr: timeStr,
+                        fullscreen: group.fullscreen || false,
+                        visibilityState: group.visibilityState || 'unknown',
+                        hasFocus: group.hasFocus || false,
+                        details: 'No heartbeat received from device for 12+ seconds',
+                        timestamp: now
+                    };
+                    violationsUpdated = true;
+                }
+            }
+
+            if (violationsUpdated) {
+                const remainingViolators = Object.values(room.activeViolations);
+                const violatorNames = remainingViolators.map(v => v.name || v);
+                const pendingNames = Object.values(room.pendingRequests);
+                io.to(code).emit('global_freeze', {
+                    violatorNames,
+                    pendingNames,
+                    manualFreeze: room.manualFreeze
+                });
+                io.to(room.host).emit('tab_violation_alert', {
+                    violations: remainingViolators
+                });
             }
         }
-
-        if (violationsUpdated) {
-            const remainingViolators = Object.values(room.activeViolations);
-            const violatorNames = remainingViolators.map(v => v.name || v);
-            const pendingNames = Object.values(room.pendingRequests);
-            io.to(code).emit('global_freeze', {
-                violatorNames,
-                pendingNames,
-                manualFreeze: room.manualFreeze
-            });
-            io.to(room.host).emit('tab_violation_alert', {
-                violations: remainingViolators
-            });
-        }
+    } catch (err) {
+        console.error('Error in heartbeat interval:', err);
     }
 }, 5000);
 
@@ -583,3 +781,4 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
 });
+
