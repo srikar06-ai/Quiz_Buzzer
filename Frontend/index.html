@@ -4,6 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.socket.io https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ws: wss:;">
     <title>Quiz Buzzer - V3-UPDATED</title>
     <!-- Fonts -->
     <link
@@ -39,7 +40,7 @@
                     <div class="divider"><span>OR</span></div>
 
                     <div class="join-form">
-                        <input type="text" id="input-room-code" placeholder="Room Code (4 Letters)" maxlength="4"
+                        <input type="text" id="input-room-code" placeholder="Room Code (6 Letters)" maxlength="6"
                             autocomplete="off" />
                         <input type="text" id="input-group-name" placeholder="Your Group Name" autocomplete="off" />
                         <button class="btn secondary-btn" id="btn-join-room">
@@ -56,7 +57,7 @@
             <header class="host-header glass-panel">
                 <div class="room-info">
                     <span class="label">ROOM CODE</span>
-                    <h2 id="display-room-code" class="code-text" onclick="copyRoomCode()">ABCD</h2>
+                    <h2 id="display-room-code" class="code-text">ABCDEF</h2>
                 </div>
                 <div class="actions">
                     <button id="btn-toggle-buzzers" class="btn secondary-btn" style="margin-right: 10px;">
@@ -250,7 +251,7 @@
             <div class="modal-actions" style="flex-direction: column; gap: 1rem;">
                 <button id="btn-download-pdf" class="btn primary-btn" style="width: 100%;">Download Leaderboard
                     (PDF)</button>
-                <button onclick="window.location.reload()" class="btn secondary-btn" style="width: 100%;">Close & Back
+                <button id="btn-close-leaderboard" class="btn secondary-btn" style="width: 100%;">Close & Back
                     to Home</button>
             </div>
         </div>

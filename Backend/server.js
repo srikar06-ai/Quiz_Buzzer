@@ -15,6 +15,10 @@ app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader(
+        'Content-Security-Policy',
+        "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.socket.io https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ws: wss:;"
+    );
     next();
 });
 
@@ -58,9 +62,46 @@ const rooms = {};
 const socketRoomMap = new Map(); // socket.id -> roomCode (O(1) disconnect lookup)
 const socketRoleMap = new Map(); // socket.id -> 'host' | 'participant'
 
+// Session Identity & Reconnection Engine (In-Memory, Grace Period TTL)
+const HOST_DISCONNECT_TTL_MS = 60000; // 60s host grace period
+const PARTICIPANT_DISCONNECT_TTL_MS = 30000; // 30s participant grace period
+const sessions = new Map(); // sessionToken -> { token, role, code, name, socketId, timer }
+
+function createSession(role, code, name, socketId) {
+    const token = crypto.randomBytes(16).toString('hex');
+    const session = {
+        token,
+        role,
+        code,
+        name,
+        socketId,
+        timer: null
+    };
+    sessions.set(token, session);
+    return token;
+}
+
+function removeSession(token) {
+    if (!token) return;
+    const session = sessions.get(token);
+    if (session) {
+        if (session.timer) clearTimeout(session.timer);
+        sessions.delete(token);
+    }
+}
+
+function removeRoomSessions(code) {
+    for (const [token, session] of sessions.entries()) {
+        if (session.code === code) {
+            if (session.timer) clearTimeout(session.timer);
+            sessions.delete(token);
+        }
+    }
+}
+
 // Per-Socket Rate Limiting System (In-Memory, No Redis)
 const RATE_LIMIT_WINDOW_MS = 1000;
-const MAX_EVENTS_PER_WINDOW = 15;
+const MAX_EVENTS_PER_WINDOW = 25;
 const socketRateLimits = new Map(); // socket.id -> { count, startTime }
 
 function isRateLimited(socketId) {
@@ -83,11 +124,11 @@ function cleanSocketState(socketId) {
     return roomCode;
 }
 
-// Cryptographically Strong 4-Letter Room Code Generator
+// Cryptographically Strong 6-Letter Room Code Generator
 function generateRoomCode() {
     const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
     let result = '';
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 6; i++) {
         const randomIndex = crypto.randomInt(0, characters.length);
         result += characters.charAt(randomIndex);
     }
@@ -96,7 +137,7 @@ function generateRoomCode() {
 
 // Input Validation Helpers
 function isValidRoomCode(code) {
-    return typeof code === 'string' && /^[A-Z]{4}$/.test(code.trim().toUpperCase());
+    return typeof code === 'string' && /^[A-Z]{6}$/.test(code.trim().toUpperCase());
 }
 
 function isValidName(name) {
@@ -109,8 +150,153 @@ function isHost(socket, room) {
     return !!(room && room.host === socket.id);
 }
 
+function cleanupParticipantDisconnect(room, code, socketId) {
+    let stateChanged = false;
+
+    if (room.groups[socketId]) {
+        const groupName = room.groups[socketId].name;
+        delete room.groups[socketId];
+        room.buzzes = room.buzzes.filter(b => b.socketId !== socketId);
+        room.buzzedSockets.delete(socketId);
+        stateChanged = true;
+
+        io.to(room.host).emit('group_left', { socketId: socketId, name: groupName });
+        io.to(code).emit('buzzes_update', room.buzzes);
+        io.to(code).emit('points_update', Object.entries(room.groups).map(([id, g]) => ({ socketId: id, name: g.name, points: g.points })));
+    }
+
+    if (room.pendingRequests[socketId]) {
+        delete room.pendingRequests[socketId];
+        stateChanged = true;
+        io.to(room.host).emit('requests_update', Object.entries(room.pendingRequests).map(([id, n]) => ({ socketId: id, name: n })));
+    }
+
+    if (room.activeViolations[socketId]) {
+        delete room.activeViolations[socketId];
+        stateChanged = true;
+    }
+
+    if (stateChanged) {
+        const remainingViolators = Object.values(room.activeViolations);
+        const remainingViolatorNames = remainingViolators.map(v => v.name || v);
+        const remainingPendingNames = Object.values(room.pendingRequests);
+
+        if (remainingViolatorNames.length > 0 || remainingPendingNames.length > 0 || room.manualFreeze) {
+            io.to(code).emit('global_freeze', {
+                violatorNames: remainingViolatorNames,
+                pendingNames: remainingPendingNames,
+                manualFreeze: room.manualFreeze
+            });
+        } else {
+            io.to(code).emit('violation_resolved', { action: 'disconnect', targetSocketId: socketId });
+        }
+
+        io.to(room.host).emit('tab_violation_alert', {
+            violations: remainingViolators
+        });
+    }
+}
+
 // Socket.IO Real-Time Communication Engine
 io.on('connection', (socket) => {
+
+    // Session Resume Handler (Reconnection)
+    socket.on('session_resume', (payload) => {
+        try {
+            if (isRateLimited(socket.id)) return;
+            if (!payload || typeof payload !== 'object') {
+                socket.emit('session_invalid');
+                return;
+            }
+
+            const { token, code } = payload;
+            if (typeof token !== 'string' || !isValidRoomCode(code)) {
+                socket.emit('session_invalid');
+                return;
+            }
+
+            const cleanCode = code.trim().toUpperCase();
+            const session = sessions.get(token);
+            const room = rooms[cleanCode];
+
+            if (!session || session.code !== cleanCode || !room) {
+                socket.emit('session_invalid');
+                return;
+            }
+
+            if (session.timer) {
+                clearTimeout(session.timer);
+                session.timer = null;
+            }
+
+            const oldSocketId = session.socketId;
+            session.socketId = socket.id;
+
+            socketRoomMap.set(socket.id, cleanCode);
+            socketRoleMap.set(socket.id, session.role);
+            socket.join(cleanCode);
+
+            if (session.role === 'host') {
+                room.host = socket.id;
+                socket.emit('session_restored', {
+                    role: 'host',
+                    code: cleanCode,
+                    buzzesAllowed: room.buzzesAllowed,
+                    manualFreeze: room.manualFreeze,
+                    teams: Object.entries(room.groups).map(([id, g]) => ({ socketId: id, name: g.name, points: g.points })),
+                    buzzes: room.buzzes,
+                    pendingRequests: Object.entries(room.pendingRequests).map(([id, n]) => ({ socketId: id, name: n })),
+                    disqualified: room.disqualified,
+                    activeViolations: Object.values(room.activeViolations)
+                });
+            } else if (session.role === 'participant') {
+                const groupState = room.groups[oldSocketId];
+                if (groupState) {
+                    delete room.groups[oldSocketId];
+                    room.groups[socket.id] = groupState;
+                } else if (!room.groups[socket.id]) {
+                    room.groups[socket.id] = {
+                        name: session.name,
+                        points: 0,
+                        lastHeartbeat: Date.now(),
+                        visibilityState: 'visible',
+                        hasFocus: true
+                    };
+                }
+
+                room.buzzes.forEach(b => {
+                    if (b.socketId === oldSocketId) b.socketId = socket.id;
+                });
+                if (room.buzzedSockets.has(oldSocketId)) {
+                    room.buzzedSockets.delete(oldSocketId);
+                    room.buzzedSockets.add(socket.id);
+                }
+
+                if (room.activeViolations[oldSocketId]) {
+                    const viol = room.activeViolations[oldSocketId];
+                    viol.socketId = socket.id;
+                    delete room.activeViolations[oldSocketId];
+                    room.activeViolations[socket.id] = viol;
+                }
+
+                socket.emit('session_restored', {
+                    role: 'participant',
+                    code: cleanCode,
+                    name: session.name,
+                    buzzesAllowed: room.buzzesAllowed,
+                    buzzes: room.buzzes
+                });
+
+                if (room.host) {
+                    io.to(room.host).emit('group_joined', { socketId: socket.id, name: session.name, points: room.groups[socket.id].points });
+                }
+                io.to(cleanCode).emit('points_update', Object.entries(room.groups).map(([id, g]) => ({ socketId: id, name: g.name, points: g.points })));
+            }
+        } catch (err) {
+            console.error('Error in session_resume:', err);
+            socket.emit('session_invalid');
+        }
+    });
 
     // Host creates a room
     socket.on('create_room', () => {
@@ -141,10 +327,11 @@ io.on('connection', (socket) => {
                 pendingRequests: {} // socketId -> name
             };
 
+            const sessionToken = createSession('host', code, 'Host', socket.id);
             socketRoomMap.set(socket.id, code);
             socketRoleMap.set(socket.id, 'host');
             socket.join(code);
-            socket.emit('room_created', code);
+            socket.emit('room_created', { code, sessionToken });
         } catch (err) {
             console.error('Error in create_room:', err);
             socket.emit('error', 'Internal server error creating room.');
@@ -162,7 +349,7 @@ io.on('connection', (socket) => {
 
             let { code, name } = payload;
             if (!isValidRoomCode(code) || !isValidName(name)) {
-                socket.emit('error', 'Room code must be 4 letters and name must be 1-30 characters.');
+                socket.emit('error', 'Room code must be 6 letters and name must be 1-30 characters.');
                 return;
             }
 
@@ -241,10 +428,12 @@ io.on('connection', (socket) => {
                     hasFocus: true
                 };
 
+                const sessionToken = createSession('participant', code, name, targetSocketId);
+
                 const targetSocket = io.sockets.sockets.get(targetSocketId);
                 if (targetSocket) {
                     targetSocket.join(code);
-                    targetSocket.emit('joined_room', { code, name, buzzesAllowed: room.buzzesAllowed });
+                    targetSocket.emit('joined_room', { code, name, buzzesAllowed: room.buzzesAllowed, sessionToken });
 
                     // Notify host specifically
                     io.to(room.host).emit('group_joined', { socketId: targetSocketId, name, points: 0 });
@@ -652,71 +841,64 @@ io.on('connection', (socket) => {
             };
 
             io.to(code).emit('room_closed', finalResults);
+            removeRoomSessions(code);
             delete rooms[code];
         } catch (err) {
             console.error('Error in room_closed_trigger:', err);
         }
     });
 
-    // O(1) Disconnect handling using socketRoomMap
+    // O(1) Disconnect handling with Grace Period Timers for Reconnection
     socket.on('disconnect', () => {
         try {
             const code = cleanSocketState(socket.id);
             if (!code || !rooms[code]) return;
 
             const room = rooms[code];
+            let matchingSession = null;
+            for (const session of sessions.values()) {
+                if (session.socketId === socket.id && session.code === code) {
+                    matchingSession = session;
+                    break;
+                }
+            }
+
             if (room.host === socket.id) {
-                const finalResults = {
-                    code: code,
-                    teams: Object.entries(room.groups).map(([id, g]) => ({ name: g.name, points: g.points })),
-                    disqualified: room.disqualified
-                };
-                io.to(code).emit('room_closed', finalResults);
-                delete rooms[code];
+                // Host disconnect: Start 60s grace timer
+                if (matchingSession) {
+                    matchingSession.timer = setTimeout(() => {
+                        if (rooms[code] && rooms[code].host === socket.id) {
+                            const finalResults = {
+                                code: code,
+                                teams: Object.entries(room.groups).map(([id, g]) => ({ name: g.name, points: g.points })),
+                                disqualified: room.disqualified
+                            };
+                            io.to(code).emit('room_closed', finalResults);
+                            removeRoomSessions(code);
+                            delete rooms[code];
+                        }
+                    }, HOST_DISCONNECT_TTL_MS);
+                } else {
+                    const finalResults = {
+                        code: code,
+                        teams: Object.entries(room.groups).map(([id, g]) => ({ name: g.name, points: g.points })),
+                        disqualified: room.disqualified
+                    };
+                    io.to(code).emit('room_closed', finalResults);
+                    removeRoomSessions(code);
+                    delete rooms[code];
+                }
             } else {
-                let stateChanged = false;
-
-                if (room.groups[socket.id]) {
-                    const groupName = room.groups[socket.id].name;
-                    delete room.groups[socket.id];
-                    room.buzzes = room.buzzes.filter(b => b.socketId !== socket.id);
-                    room.buzzedSockets.delete(socket.id);
-                    stateChanged = true;
-
-                    io.to(room.host).emit('group_left', { socketId: socket.id, name: groupName });
-                    io.to(code).emit('buzzes_update', room.buzzes);
-                    io.to(code).emit('points_update', Object.entries(room.groups).map(([id, g]) => ({ socketId: id, name: g.name, points: g.points })));
-                }
-
-                if (room.pendingRequests[socket.id]) {
-                    delete room.pendingRequests[socket.id];
-                    stateChanged = true;
-                    io.to(room.host).emit('requests_update', Object.entries(room.pendingRequests).map(([id, n]) => ({ socketId: id, name: n })));
-                }
-
-                if (room.activeViolations[socket.id]) {
-                    delete room.activeViolations[socket.id];
-                    stateChanged = true;
-                }
-
-                if (stateChanged) {
-                    const remainingViolators = Object.values(room.activeViolations);
-                    const remainingViolatorNames = remainingViolators.map(v => v.name || v);
-                    const remainingPendingNames = Object.values(room.pendingRequests);
-
-                    if (remainingViolatorNames.length > 0 || remainingPendingNames.length > 0 || room.manualFreeze) {
-                        io.to(code).emit('global_freeze', {
-                            violatorNames: remainingViolatorNames,
-                            pendingNames: remainingPendingNames,
-                            manualFreeze: room.manualFreeze
-                        });
-                    } else {
-                        io.to(code).emit('violation_resolved', { action: 'disconnect', targetSocketId: socket.id });
-                    }
-
-                    io.to(room.host).emit('tab_violation_alert', {
-                        violations: remainingViolators
-                    });
+                // Participant disconnect: Start 30s grace timer
+                if (matchingSession) {
+                    matchingSession.timer = setTimeout(() => {
+                        if (rooms[code]) {
+                            cleanupParticipantDisconnect(room, code, socket.id);
+                        }
+                        removeSession(matchingSession.token);
+                    }, PARTICIPANT_DISCONNECT_TTL_MS);
+                } else {
+                    cleanupParticipantDisconnect(room, code, socket.id);
                 }
             }
         } catch (err) {

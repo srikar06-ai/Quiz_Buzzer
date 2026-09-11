@@ -52,6 +52,7 @@ const waitingModal = document.getElementById('waiting-modal');
 const leaderboardModal = document.getElementById('leaderboard-modal');
 const leaderboardContainer = document.getElementById('leaderboard-container');
 const btnDownloadPdf = document.getElementById('btn-download-pdf');
+const btnCloseLeaderboard = document.getElementById('btn-close-leaderboard');
 
 // Host Confirm Modal
 const hostConfirmModal = document.getElementById('host-confirm-modal');
@@ -76,6 +77,28 @@ let currentGroupName = '';
 let isHost = false;
 let isBuzzerActive = true;
 let wakeLock = null;
+
+// Session Identity Storage Helper
+function saveSession(token, code, role, name) {
+    try {
+        localStorage.setItem('quiz_session', JSON.stringify({ token, code, role, name }));
+    } catch (e) {}
+}
+
+function clearSession() {
+    try {
+        localStorage.removeItem('quiz_session');
+    } catch (e) {}
+}
+
+function getSavedSession() {
+    try {
+        const raw = localStorage.getItem('quiz_session');
+        return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+        return null;
+    }
+}
 
 // Host Window Protection
 window.addEventListener('beforeunload', (e) => {
@@ -125,12 +148,26 @@ function showToast(message, type = 'info') {
 
 // Global copy function for the room code
 window.copyRoomCode = async () => {
+    if (!currentRoomCode) return;
     try {
         await navigator.clipboard.writeText(currentRoomCode);
         showToast('Room Code copied to clipboard', 'success');
     } catch (err) {
         showToast('Failed to copy', 'error');
     }
+};
+
+if (displayRoomCode) {
+    displayRoomCode.addEventListener('click', () => {
+        window.copyRoomCode();
+    });
+}
+
+if (btnCloseLeaderboard) {
+    btnCloseLeaderboard.addEventListener('click', () => {
+        clearSession();
+        window.location.reload();
+    });
 }
 
 // ----------------- Event Listeners (UI) -----------------
@@ -155,8 +192,8 @@ btnJoinRoom.addEventListener('click', () => {
     const code = inputRoomCode.value.trim().toUpperCase();
     const name = inputGroupName.value.trim();
 
-    if (!code || code.length !== 4) {
-        showToast('Please enter a valid 4-letter room code', 'error');
+    if (!code || code.length !== 6) {
+        showToast('Please enter a valid 6-letter room code', 'error');
         return;
     }
     if (!name) {
@@ -212,14 +249,53 @@ buzzerBtn.addEventListener('touchstart', (e) => {
     buzzerBtn.click();
 }, { passive: false });
 
-
 if (btnWarningLeave) {
     btnWarningLeave.addEventListener('click', () => {
+        clearSession();
         window.location.reload();
     });
 }
 
-// ----------------- Socket.IO Listeners -----------------
+// ----------------- Socket.IO & Session Listeners -----------------
+
+// Auto-reconnect on socket connection using lightweight session token
+socket.on('connect', () => {
+    const saved = getSavedSession();
+    if (saved && saved.token && saved.code) {
+        socket.emit('session_resume', { token: saved.token, code: saved.code });
+    }
+});
+
+socket.on('session_restored', (data) => {
+    if (data.role === 'host') {
+        isHost = true;
+        currentRoomCode = data.code;
+        connectedTeams = data.teams || [];
+        displayRoomCode.textContent = data.code;
+        renderTeams();
+        if (data.buzzes) renderBuzzesView(data.buzzes);
+        if (data.disqualified) renderDisqualified(data.disqualified);
+        switchView('host');
+        showToast('Host session restored!', 'success');
+    } else if (data.role === 'participant') {
+        isHost = false;
+        currentRoomCode = data.code;
+        currentGroupName = data.name;
+        displayGroupName.textContent = currentGroupName;
+        playerRoomCode.textContent = currentRoomCode;
+
+        if (data.buzzesAllowed) setPlayerBuzzerState('active');
+        else setPlayerBuzzerState('disabled');
+
+        if (data.buzzes) renderBuzzesView(data.buzzes);
+        switchView('player');
+        showToast('Player session restored!', 'success');
+    }
+});
+
+socket.on('session_invalid', () => {
+    clearSession();
+});
 
 socket.on('error', (msg) => {
     showToast(msg, 'error');
@@ -251,8 +327,8 @@ if (btnEndQuiz) {
     btnEndQuiz.addEventListener('click', () => {
         if (confirm('Are you sure you want to end the quiz? This will close the room for everyone.')) {
             socket.emit('toggle_buzzers', { code: currentRoomCode, active: false });
-            // The room will be closed on disconnect or we can emit a close event
             socket.emit('room_closed_trigger', currentRoomCode);
+            clearSession();
         }
     });
 }
@@ -344,17 +420,33 @@ function addTeamToSnapshot(parent, team, rank) {
     item.style.borderRadius = '6px';
     item.style.fontSize = '14px';
 
-    item.innerHTML = `
-        <span><strong style="color:#38bdf8; margin-right:10px;">#${rank}</strong> ${escapeHTML(team.name)}</span>
-        <span style="font-weight:700; color:#4ade80;">${Number(team.points) || 0} pts</span>
-    `;
+    const rankSpan = document.createElement('span');
+    const rankStrong = document.createElement('strong');
+    rankStrong.style.color = '#38bdf8';
+    rankStrong.style.marginRight = '10px';
+    rankStrong.textContent = `#${rank}`;
+    rankSpan.appendChild(rankStrong);
+    rankSpan.append(team.name);
+
+    const ptsSpan = document.createElement('span');
+    ptsSpan.style.fontWeight = '700';
+    ptsSpan.style.color = '#4ade80';
+    ptsSpan.textContent = `${Number(team.points) || 0} pts`;
+
+    item.appendChild(rankSpan);
+    item.appendChild(ptsSpan);
     parent.appendChild(item);
 }
 
 // HOST: Room created
-socket.on('room_created', (code) => {
+socket.on('room_created', (data) => {
     isHost = true;
+    const code = typeof data === 'object' ? data.code : data;
+    const token = typeof data === 'object' ? data.sessionToken : null;
     currentRoomCode = code;
+
+    if (token) saveSession(token, code, 'host', 'Host');
+
     connectedTeams = [];
     displayRoomCode.textContent = code;
     if (buzzesList) buzzesList.innerHTML = '<div class="empty-state large"><div class="icon-pulse">🔔</div><p>Waiting for buzzes...</p></div>';
@@ -375,10 +467,9 @@ socket.on('waiting_for_approval', () => {
 socket.on('join_request', (data) => {
     if (!isHost) return;
     showToast(`New join request: ${data.name}`, 'info');
-    // Requests list will be updated by requests_update
 });
 
-// HOST: Update Requests List
+// HOST: Update Requests List (Strict DOM manipulation - No inline event handlers)
 socket.on('requests_update', (requests) => {
     if (!isHost || !requestsList) return;
 
@@ -391,16 +482,40 @@ socket.on('requests_update', (requests) => {
     requests.forEach(req => {
         const li = document.createElement('li');
         li.className = 'team-item';
-        li.style = 'display:flex; justify-content:space-between; align-items:center;';
-        const safeId = escapeHTML(req.socketId);
-        const safeName = escapeHTML(req.name);
-        li.innerHTML = `
-            <span style="font-weight:600;">${safeName}</span>
-            <div style="display:flex; gap:0.5rem;">
-                <button class="btn primary-btn" style="padding:0.4rem 0.8rem; font-size:0.8rem;" onclick="resolveJoin('${safeId}', 'allow')">Allow</button>
-                <button class="btn warning-btn" style="padding:0.4rem 0.8rem; font-size:0.8rem;" onclick="resolveJoin('${safeId}', 'reject')">Reject</button>
-            </div>
-        `;
+        li.style.display = 'flex';
+        li.style.justifyContent = 'space-between';
+        li.style.alignItems = 'center';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.style.fontWeight = '600';
+        nameSpan.textContent = req.name;
+
+        const btnDiv = document.createElement('div');
+        btnDiv.style.display = 'flex';
+        btnDiv.style.gap = '0.5rem';
+
+        const allowBtn = document.createElement('button');
+        allowBtn.className = 'btn primary-btn';
+        allowBtn.style.padding = '0.4rem 0.8rem';
+        allowBtn.style.fontSize = '0.8rem';
+        allowBtn.textContent = 'Allow';
+        allowBtn.addEventListener('click', () => {
+            resolveJoin(req.socketId, 'allow');
+        });
+
+        const rejectBtn = document.createElement('button');
+        rejectBtn.className = 'btn warning-btn';
+        rejectBtn.style.padding = '0.4rem 0.8rem';
+        rejectBtn.style.fontSize = '0.8rem';
+        rejectBtn.textContent = 'Reject';
+        rejectBtn.addEventListener('click', () => {
+            resolveJoin(req.socketId, 'reject');
+        });
+
+        btnDiv.appendChild(allowBtn);
+        btnDiv.appendChild(rejectBtn);
+        li.appendChild(nameSpan);
+        li.appendChild(btnDiv);
         requestsList.appendChild(li);
     });
 });
@@ -414,6 +529,8 @@ socket.on('joined_room', (data) => {
     if (waitingModal) waitingModal.classList.add('hidden');
     currentRoomCode = data.code;
     currentGroupName = data.name;
+
+    if (data.sessionToken) saveSession(data.sessionToken, data.code, 'participant', data.name);
 
     displayGroupName.textContent = currentGroupName;
     playerRoomCode.textContent = currentRoomCode;
@@ -434,7 +551,7 @@ socket.on('buzz_registered', (data) => {
     setPlayerBuzzerState('buzzed', data.rank);
 });
 
-// PLAYER: Server-side Buzz Rejection (DevTools or UI bypass prevention)
+// PLAYER: Server-side Buzz Rejection
 socket.on('buzz_rejected', (data) => {
     showToast(data.message || 'Buzz rejected: Active violation pending!', 'error');
     lockQuizUI();
@@ -453,12 +570,10 @@ socket.on('buzzer_state', (data) => {
 
 // EVERYONE: Points Leaderboard Update
 socket.on('points_update', (teamsWithPoints) => {
-    connectedTeams = teamsWithPoints; // Store for host
+    connectedTeams = teamsWithPoints;
     if (isHost) {
         renderTeams();
         renderHostLeaderboard(teamsWithPoints);
-    } else {
-        // Participants don't see points anymore
     }
 });
 
@@ -476,14 +591,12 @@ socket.on('reset', (data) => {
 // HOST / PLAYER: Room closed with Final Results
 socket.on('room_closed', (results) => {
     releaseImmersiveMode();
-    console.log("Room closed received. results:", !!results, "isHost:", isHost);
+    clearSession();
 
     if (isHost && results && (results.teams || results.disqualified)) {
-        console.log("I am Host - showing leaderboard modal.");
         lastGlobalResults = results;
         renderFinalLeaderboard(results);
     } else {
-        console.log("I am Participant - hiding leaderboard and resetting.");
         if (leaderboardModal) leaderboardModal.classList.add('hidden');
         showToast('The Host has ended the quiz.', 'error');
         setTimeout(() => {
@@ -497,46 +610,114 @@ function renderFinalLeaderboard(results) {
 
     leaderboardContainer.innerHTML = '';
 
-    // Sort teams by points
+    const infoDiv = document.createElement('div');
+    infoDiv.style.marginBottom = '2rem';
+
+    const roomP = document.createElement('p');
+    roomP.style.fontSize = '1.1rem';
+    roomP.style.color = 'var(--text-secondary)';
+    roomP.style.marginBottom = '0.5rem';
+    roomP.append('Room Code: ');
+    const codeStrong = document.createElement('strong');
+    codeStrong.style.color = 'var(--primary-color)';
+    codeStrong.textContent = results.code;
+    roomP.append(codeStrong);
+
+    const dateP = document.createElement('p');
+    dateP.style.fontSize = '0.9rem';
+    dateP.style.color = 'var(--text-secondary)';
+    dateP.textContent = `Date: ${new Date().toLocaleString()}`;
+
+    infoDiv.appendChild(roomP);
+    infoDiv.appendChild(dateP);
+
+    const standingsHeader = document.createElement('h4');
+    standingsHeader.style.marginBottom = '1rem';
+    standingsHeader.style.color = 'var(--success)';
+    standingsHeader.style.borderBottom = '1px solid rgba(255,255,255,0.1)';
+    standingsHeader.style.paddingBottom = '0.5rem';
+    standingsHeader.textContent = 'Final Standings';
+
+    const standingsContainer = document.createElement('div');
+    standingsContainer.style.display = 'flex';
+    standingsContainer.style.flexDirection = 'column';
+    standingsContainer.style.gap = '0.8rem';
+    standingsContainer.style.marginBottom = '2rem';
+
     const sortedTeams = [...results.teams].sort((a, b) => b.points - a.points);
-
-    let html = `
-        <div style="margin-bottom: 2rem;">
-            <p style="font-size: 1.1rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Room Code: <strong style="color:var(--primary-color)">${escapeHTML(results.code)}</strong></p>
-            <p style="font-size: 0.9rem; color: var(--text-secondary);">Date: ${escapeHTML(new Date().toLocaleString())}</p>
-        </div>
-        
-        <h4 style="margin-bottom: 1rem; color: var(--success); border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem;">Final Standings</h4>
-        <div style="display:flex; flex-direction:column; gap: 0.8rem; margin-bottom: 2rem;">
-    `;
-
     sortedTeams.forEach((team, index) => {
         const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`;
-        html += `
-            <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.05); padding: 1rem; border-radius: 8px;">
-                <div style="display:flex; align-items:center; gap: 1rem;">
-                    <span style="font-weight: 800; font-size: 1.2rem; min-width: 30px; color:var(--primary-color)">${medal}</span>
-                    <span style="font-weight: 600;">${escapeHTML(team.name)}</span>
-                </div>
-                <span style="font-weight: 800; color: var(--success); font-size: 1.1rem;">${Number(team.points) || 0} pts</span>
-            </div>
-        `;
+        const itemDiv = document.createElement('div');
+        itemDiv.style.display = 'flex';
+        itemDiv.style.justifyContent = 'space-between';
+        itemDiv.style.alignItems = 'center';
+        itemDiv.style.background = 'rgba(255,255,255,0.05)';
+        itemDiv.style.padding = '1rem';
+        itemDiv.style.borderRadius = '8px';
+
+        const left = document.createElement('div');
+        left.style.display = 'flex';
+        left.style.alignItems = 'center';
+        left.style.gap = '1rem';
+
+        const medalSpan = document.createElement('span');
+        medalSpan.style.fontWeight = '800';
+        medalSpan.style.fontSize = '1.2rem';
+        medalSpan.style.minWidth = '30px';
+        medalSpan.style.color = 'var(--primary-color)';
+        medalSpan.textContent = medal;
+
+        const nameSpan = document.createElement('span');
+        nameSpan.style.fontWeight = '600';
+        nameSpan.textContent = team.name;
+
+        left.appendChild(medalSpan);
+        left.appendChild(nameSpan);
+
+        const pointsSpan = document.createElement('span');
+        pointsSpan.style.fontWeight = '800';
+        pointsSpan.style.color = 'var(--success)';
+        pointsSpan.style.fontSize = '1.1rem';
+        pointsSpan.textContent = `${Number(team.points) || 0} pts`;
+
+        itemDiv.appendChild(left);
+        itemDiv.appendChild(pointsSpan);
+        standingsContainer.appendChild(itemDiv);
     });
 
-    html += `</div>`;
+    leaderboardContainer.appendChild(infoDiv);
+    leaderboardContainer.appendChild(standingsHeader);
+    leaderboardContainer.appendChild(standingsContainer);
 
     if (results.disqualified && results.disqualified.length > 0) {
-        html += `
-            <h4 style="margin-bottom: 1rem; color: var(--danger); border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem;">Disqualified Teams</h4>
-            <div style="display:flex; flex-wrap:wrap; gap: 0.5rem;">
-        `;
+        const disqHeader = document.createElement('h4');
+        disqHeader.style.marginBottom = '1rem';
+        disqHeader.style.color = 'var(--danger)';
+        disqHeader.style.borderBottom = '1px solid rgba(255,255,255,0.1)';
+        disqHeader.style.paddingBottom = '0.5rem';
+        disqHeader.textContent = 'Disqualified Teams';
+
+        const disqContainer = document.createElement('div');
+        disqContainer.style.display = 'flex';
+        disqContainer.style.flexWrap = 'wrap';
+        disqContainer.style.gap = '0.5rem';
+
         results.disqualified.forEach(name => {
-            html += `<span style="background:rgba(239, 68, 68, 0.1); color:#ef4444; padding: 0.4rem 0.8rem; border-radius: 20px; font-size: 0.85rem; border: 1px solid rgba(239, 68, 68, 0.2);">❌ ${escapeHTML(name)}</span>`;
+            const span = document.createElement('span');
+            span.style.background = 'rgba(239, 68, 68, 0.1)';
+            span.style.color = '#ef4444';
+            span.style.padding = '0.4rem 0.8rem';
+            span.style.borderRadius = '20px';
+            span.style.fontSize = '0.85rem';
+            span.style.border = '1px solid rgba(239, 68, 68, 0.2)';
+            span.textContent = `❌ ${name}`;
+            disqContainer.appendChild(span);
         });
-        html += `</div>`;
+
+        leaderboardContainer.appendChild(disqHeader);
+        leaderboardContainer.appendChild(disqContainer);
     }
 
-    leaderboardContainer.innerHTML = html;
     leaderboardModal.classList.remove('hidden');
 }
 
@@ -555,7 +736,6 @@ async function generatePDF(results) {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF();
 
-    // Header
     doc.setFillColor(30, 30, 30);
     doc.rect(0, 0, 210, 40, 'F');
 
@@ -567,7 +747,6 @@ async function generatePDF(results) {
     doc.setFontSize(12);
     doc.text(`Room: ${results.code} | Date: ${new Date().toLocaleString()}`, 105, 30, { align: "center" });
 
-    // Standings
     doc.setTextColor(0, 0, 0);
     doc.setFontSize(16);
     doc.setFont(undefined, 'bold');
@@ -582,7 +761,6 @@ async function generatePDF(results) {
     sorted.forEach((team, index) => {
         if (y > 270) { doc.addPage(); y = 20; }
 
-        // Background for odd rows
         if (index % 2 === 0) {
             doc.setFillColor(245, 245, 245);
             doc.rect(15, y - 5, 180, 10, 'F');
@@ -594,7 +772,6 @@ async function generatePDF(results) {
         y += 10;
     });
 
-    // Disqualified
     if (results.disqualified && results.disqualified.length > 0) {
         y += 10;
         if (y > 270) { doc.addPage(); y = 20; }
@@ -613,7 +790,6 @@ async function generatePDF(results) {
         });
     }
 
-    // Footer
     doc.setFontSize(10);
     doc.setTextColor(150, 150, 150);
     doc.text("Generated by Quiz Buzzer App", 105, 285, { align: "center" });
@@ -626,7 +802,13 @@ let connectedTeams = [];
 socket.on('group_joined', (data) => {
     if (!isHost) return;
 
-    connectedTeams.push(data);
+    const existingIdx = connectedTeams.findIndex(t => t.socketId === data.socketId);
+    if (existingIdx !== -1) {
+        connectedTeams[existingIdx] = data;
+    } else {
+        connectedTeams.push(data);
+    }
+
     renderTeams();
     showToast(`${data.name} just joined!`, 'success');
 });
@@ -681,8 +863,14 @@ function renderDisqualified(disqualified) {
     disqualified.forEach(name => {
         const li = document.createElement('li');
         li.className = 'team-item';
-        li.style = 'background:rgba(239, 68, 68, 0.1); border-left: 3px solid #ef4444;';
-        li.innerHTML = `<span style="color:#ef4444">❌ ${escapeHTML(name)}</span>`;
+        li.style.background = 'rgba(239, 68, 68, 0.1)';
+        li.style.borderLeft = '3px solid #ef4444';
+
+        const span = document.createElement('span');
+        span.style.color = '#ef4444';
+        span.textContent = `❌ ${name}`;
+
+        li.appendChild(span);
         disqualifiedList.appendChild(li);
     });
 }
@@ -818,27 +1006,44 @@ if (btnWarningStay) {
 socket.on('global_freeze', ({ violatorNames, pendingNames, manualFreeze }) => {
     if (isHost) return;
     if (globalFreezeText) {
-        let msg = '';
+        globalFreezeText.textContent = '';
+
         if (manualFreeze) {
-            msg += `🔒 <strong style="color:var(--primary-color)">Room is manually frozen by Host</strong>.<br>`;
+            const p1 = document.createElement('p');
+            p1.append('🔒 ');
+            const s1 = document.createElement('strong');
+            s1.style.color = 'var(--primary-color)';
+            s1.textContent = 'Room is manually frozen by Host';
+            p1.append(s1, '.');
+            globalFreezeText.appendChild(p1);
         }
         if (violatorNames && violatorNames.length > 0) {
-            const names = violatorNames.map(n => escapeHTML(n)).join("', '");
-            msg += `⚠️ <strong style="color:var(--danger)">Teams '${names}'</strong> triggered anti-cheating alerts!<br>`;
+            const p2 = document.createElement('p');
+            p2.append('⚠️ ');
+            const s2 = document.createElement('strong');
+            s2.style.color = 'var(--danger)';
+            s2.textContent = `Teams '${violatorNames.join("', '")}'`;
+            p2.append(s2, ' triggered anti-cheating alerts!');
+            globalFreezeText.appendChild(p2);
         }
         if (pendingNames && pendingNames.length > 0) {
-            const names = pendingNames.map(n => escapeHTML(n)).join("', '");
-            msg += `📨 <strong style="color:var(--secondary)">Teams '${names}'</strong> are requesting to join!<br>`;
+            const p3 = document.createElement('p');
+            p3.append('📨 ');
+            const s3 = document.createElement('strong');
+            s3.style.color = 'var(--secondary)';
+            s3.textContent = `Teams '${pendingNames.join("', '")}'`;
+            p3.append(s3, ' are requesting to join!');
+            globalFreezeText.appendChild(p3);
         }
 
-        if (!msg) msg = 'Page is frozen by Host.';
-
-        globalFreezeText.innerHTML = msg;
+        if (!globalFreezeText.childNodes.length) {
+            globalFreezeText.textContent = 'Page is frozen by Host.';
+        }
     }
     if (freezeModal) freezeModal.classList.remove('hidden');
 });
 
-// Host: Rich Tab Violation Alerts Received
+// Host: Rich Tab Violation Alerts Received (Strict DOM construction)
 socket.on('tab_violation_alert', ({ violations }) => {
     if (!isHost) return;
 
@@ -851,33 +1056,96 @@ socket.on('tab_violation_alert', ({ violations }) => {
 
         violations.forEach(v => {
             const rawName = typeof v === 'object' ? v.name : v;
-            const vName = escapeHTML(rawName);
-            const vType = escapeHTML(typeof v === 'object' && v.type ? v.type : 'TAB_SWITCH');
-            const vTime = escapeHTML(typeof v === 'object' && v.timeStr ? v.timeStr : '');
-            const vDetails = escapeHTML(typeof v === 'object' && v.details ? v.details : '');
-            const vSocketId = escapeHTML(typeof v === 'object' && v.socketId ? v.socketId : '');
+            const vType = typeof v === 'object' && v.type ? v.type : 'TAB_SWITCH';
+            const vTime = typeof v === 'object' && v.timeStr ? v.timeStr : '';
+            const vDetails = typeof v === 'object' && v.details ? v.details : '';
+            const vSocketId = typeof v === 'object' && v.socketId ? v.socketId : '';
 
             let badgeColor = '#ef4444';
             if (vType === 'SUSPICIOUS_SYSTEM_UI') badgeColor = '#f59e0b';
             else if (vType === 'HEARTBEAT_TIMEOUT') badgeColor = '#ec4899';
 
             const div = document.createElement('div');
-            div.style = 'background:rgba(255,255,255,0.05); padding:1rem; border-radius:10px; margin-bottom:0.8rem; border:1px solid rgba(255,255,255,0.1); text-align:left;';
-            div.innerHTML = `
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
-                    <span style="font-weight:700; font-size:1.1rem; color:#fff;">⚠️ ${vName}</span>
-                    <span style="background:${badgeColor}; color:#fff; font-size:0.7rem; font-weight:800; padding:0.2rem 0.5rem; border-radius:4px;">${vType}</span>
-                </div>
-                <div style="font-size:0.8rem; color:var(--text-secondary); margin-bottom:0.8rem;">
-                    <div>Time: <strong>${vTime}</strong></div>
-                    <div>${vDetails}</div>
-                </div>
-                <div style="display:flex; gap:0.5rem; justify-content:flex-end;">
-                    <button class="btn warning-btn" style="padding:0.4rem 0.8rem; font-size:0.8rem;" onclick="resolveTeam('${vSocketId}', 'disqualify')">Disqualify</button>
-                    <button class="btn secondary-btn" style="padding:0.4rem 0.8rem; font-size:0.8rem; background:#f59e0b; color:#fff;" onclick="resolveTeam('${vSocketId}', 'warn')">Warn</button>
-                    <button class="btn primary-btn" style="padding:0.4rem 0.8rem; font-size:0.8rem;" onclick="resolveTeam('${vSocketId}', 'letgo')">Let Go</button>
-                </div>
-            `;
+            div.style.background = 'rgba(255,255,255,0.05)';
+            div.style.padding = '1rem';
+            div.style.borderRadius = '10px';
+            div.style.marginBottom = '0.8rem';
+            div.style.border = '1px solid rgba(255,255,255,0.1)';
+            div.style.textAlign = 'left';
+
+            const headerDiv = document.createElement('div');
+            headerDiv.style.display = 'flex';
+            headerDiv.style.justifyContent = 'space-between';
+            headerDiv.style.alignItems = 'center';
+            headerDiv.style.marginBottom = '0.4rem';
+
+            const nameSpan = document.createElement('span');
+            nameSpan.style.fontWeight = '700';
+            nameSpan.style.fontSize = '1.1rem';
+            nameSpan.style.color = '#fff';
+            nameSpan.textContent = `⚠️ ${rawName}`;
+
+            const badgeSpan = document.createElement('span');
+            badgeSpan.style.background = badgeColor;
+            badgeSpan.style.color = '#fff';
+            badgeSpan.style.fontSize = '0.7rem';
+            badgeSpan.style.fontWeight = '800';
+            badgeSpan.style.padding = '0.2rem 0.5rem';
+            badgeSpan.style.borderRadius = '4px';
+            badgeSpan.textContent = vType;
+
+            headerDiv.appendChild(nameSpan);
+            headerDiv.appendChild(badgeSpan);
+
+            const detailsDiv = document.createElement('div');
+            detailsDiv.style.fontSize = '0.8rem';
+            detailsDiv.style.color = 'var(--text-secondary)';
+            detailsDiv.style.marginBottom = '0.8rem';
+
+            const timeDiv = document.createElement('div');
+            timeDiv.textContent = `Time: ${vTime}`;
+            const detailsTextDiv = document.createElement('div');
+            detailsTextDiv.textContent = vDetails;
+
+            detailsDiv.appendChild(timeDiv);
+            detailsDiv.appendChild(detailsTextDiv);
+
+            const actionContainer = document.createElement('div');
+            actionContainer.style.display = 'flex';
+            actionContainer.style.gap = '0.5rem';
+            actionContainer.style.justifyContent = 'flex-end';
+
+            const disqBtn = document.createElement('button');
+            disqBtn.className = 'btn warning-btn';
+            disqBtn.style.padding = '0.4rem 0.8rem';
+            disqBtn.style.fontSize = '0.8rem';
+            disqBtn.textContent = 'Disqualify';
+            disqBtn.addEventListener('click', () => resolveTeam(vSocketId, 'disqualify'));
+
+            const warnBtn = document.createElement('button');
+            warnBtn.className = 'btn secondary-btn';
+            warnBtn.style.padding = '0.4rem 0.8rem';
+            warnBtn.style.fontSize = '0.8rem';
+            warnBtn.style.background = '#f59e0b';
+            warnBtn.style.color = '#fff';
+            warnBtn.textContent = 'Warn';
+            warnBtn.addEventListener('click', () => resolveTeam(vSocketId, 'warn'));
+
+            const letGoBtn = document.createElement('button');
+            letGoBtn.className = 'btn primary-btn';
+            letGoBtn.style.padding = '0.4rem 0.8rem';
+            letGoBtn.style.fontSize = '0.8rem';
+            letGoBtn.textContent = 'Let Go';
+            letGoBtn.addEventListener('click', () => resolveTeam(vSocketId, 'letgo'));
+
+            actionContainer.appendChild(disqBtn);
+            actionContainer.appendChild(warnBtn);
+            actionContainer.appendChild(letGoBtn);
+
+            div.appendChild(headerDiv);
+            div.appendChild(detailsDiv);
+            div.appendChild(actionContainer);
+
             violatorListContainer.appendChild(div);
         });
     }
@@ -919,13 +1187,14 @@ socket.on('violation_resolved', ({ action, targetSocketId }) => {
         if (socket.id === targetSocketId) {
             if (disqualifiedModal) disqualifiedModal.classList.remove('hidden');
             releaseImmersiveMode();
+            clearSession();
         } else {
             showToast('A violator was disqualified. Game resumes.', 'warning');
         }
     }
 });
 
-// ----------------- Render Functions -----------------
+// ----------------- Render Functions (DOM API Standard) -----------------
 
 function renderTeams() {
     teamsCount.textContent = connectedTeams.length;
@@ -937,29 +1206,75 @@ function renderTeams() {
 
     teamsList.innerHTML = '';
 
-    // Sort teams by points descending
     const sortedTeams = [...connectedTeams].sort((a, b) => (b.points || 0) - (a.points || 0));
 
     sortedTeams.forEach(team => {
         const li = document.createElement('li');
-        const points = Number(team.points) || 0;
-        const safeId = escapeHTML(team.socketId);
-        const safeName = escapeHTML(team.name);
-        li.innerHTML = `
-            <div style="display:flex; justify-content:space-between; align-items:center; width:100%;">
-                <div style="display:flex; align-items:center; gap:0.5rem;">
-                    <button class="btn warning-btn" style="padding:0.3rem 0.5rem; font-size:0.7rem; background:#ef4444;" onclick="requestDisqualify('${safeId}', '${safeName}')">❌</button>
-                    <span>${safeName}</span>
-                </div>
-                <div class="pt-controls">
-                    <button class="pt-btn" onclick="updatePoints('${safeId}', -1)">-</button>
-                    <div class="pt-score">${points}</div>
-                    <button class="quick-pt-btn" onclick="updatePoints('${safeId}', 10)">+10<br><span style="font-size:0.6rem;opacity:0.8;">(No pass)</span></button>
-                    <button class="quick-pt-btn" onclick="updatePoints('${safeId}', 7)">+7<br><span style="font-size:0.6rem;opacity:0.8;">(1st pass)</span></button>
-                    <button class="quick-pt-btn" onclick="updatePoints('${safeId}', 4)">+4<br><span style="font-size:0.6rem;opacity:0.8;">(Second pass)</span></button>
-                </div>
-            </div>
-        `;
+
+        const wrapper = document.createElement('div');
+        wrapper.style.display = 'flex';
+        wrapper.style.justifyContent = 'space-between';
+        wrapper.style.alignItems = 'center';
+        wrapper.style.width = '100%';
+
+        const leftGroup = document.createElement('div');
+        leftGroup.style.display = 'flex';
+        leftGroup.style.alignItems = 'center';
+        leftGroup.style.gap = '0.5rem';
+
+        const disqBtn = document.createElement('button');
+        disqBtn.className = 'btn warning-btn';
+        disqBtn.style.padding = '0.3rem 0.5rem';
+        disqBtn.style.fontSize = '0.7rem';
+        disqBtn.style.background = '#ef4444';
+        disqBtn.textContent = '❌';
+        disqBtn.addEventListener('click', () => {
+            requestDisqualify(team.socketId, team.name);
+        });
+
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = team.name;
+
+        leftGroup.appendChild(disqBtn);
+        leftGroup.appendChild(nameSpan);
+
+        const ctrlGroup = document.createElement('div');
+        ctrlGroup.className = 'pt-controls';
+
+        const minusBtn = document.createElement('button');
+        minusBtn.className = 'pt-btn';
+        minusBtn.textContent = '-';
+        minusBtn.addEventListener('click', () => updatePoints(team.socketId, -1));
+
+        const scoreDiv = document.createElement('div');
+        scoreDiv.className = 'pt-score';
+        scoreDiv.textContent = Number(team.points) || 0;
+
+        const add10Btn = document.createElement('button');
+        add10Btn.className = 'quick-pt-btn';
+        add10Btn.innerHTML = `+10<br><span style="font-size:0.6rem;opacity:0.8;">(No pass)</span>`;
+        add10Btn.addEventListener('click', () => updatePoints(team.socketId, 10));
+
+        const add7Btn = document.createElement('button');
+        add7Btn.className = 'quick-pt-btn';
+        add7Btn.innerHTML = `+7<br><span style="font-size:0.6rem;opacity:0.8;">(1st pass)</span>`;
+        add7Btn.addEventListener('click', () => updatePoints(team.socketId, 7));
+
+        const add4Btn = document.createElement('button');
+        add4Btn.className = 'quick-pt-btn';
+        add4Btn.innerHTML = `+4<br><span style="font-size:0.6rem;opacity:0.8;">(Second pass)</span>`;
+        add4Btn.addEventListener('click', () => updatePoints(team.socketId, 4));
+
+        ctrlGroup.appendChild(minusBtn);
+        ctrlGroup.appendChild(scoreDiv);
+        ctrlGroup.appendChild(add10Btn);
+        ctrlGroup.appendChild(add7Btn);
+        ctrlGroup.appendChild(add4Btn);
+
+        wrapper.appendChild(leftGroup);
+        wrapper.appendChild(ctrlGroup);
+        li.appendChild(wrapper);
+
         teamsList.appendChild(li);
     });
 }
@@ -967,11 +1282,15 @@ function renderTeams() {
 // Host: Manual Disqualify Flow
 window.requestDisqualify = (socketId, name) => {
     pendingDisqualifySocketId = socketId;
-    if (disqualifyMsg) disqualifyMsg.innerHTML = `Are you sure you want to disqualify <strong>'${escapeHTML(name)}'</strong>?`;
+    if (disqualifyMsg) {
+        disqualifyMsg.textContent = '';
+        disqualifyMsg.append('Are you sure you want to disqualify ');
+        const strong = document.createElement('strong');
+        strong.textContent = `'${name}'`;
+        disqualifyMsg.append(strong, '?');
+    }
 
-    // Freeze room while host decides
     socket.emit('toggle_manual_freeze', { code: currentRoomCode, freeze: true });
-
     if (hostConfirmModal) hostConfirmModal.classList.remove('hidden');
 };
 
@@ -999,11 +1318,9 @@ if (btnCancelDisqualify) {
 }
 
 function renderBuzzesView(buzzes) {
-    // Render for Host main list
     if (isHost) {
         renderBuzzesList(buzzes, buzzesList);
     } else {
-        // Player view: check if player has buzzed and sync rank & buzzed state
         const myBuzzIndex = buzzes.findIndex(b => b.socketId === socket.id);
         if (myBuzzIndex !== -1) {
             setPlayerBuzzerState('buzzed', myBuzzIndex + 1);
@@ -1030,14 +1347,27 @@ function renderBuzzesList(buzzes, container) {
         li.className = 'buzz-item';
         if (index === 0) li.classList.add('first-place');
 
-        let rankStr = `#${index + 1}`;
+        const rankSpan = document.createElement('span');
+        rankSpan.className = 'rank';
+        rankSpan.textContent = `#${index + 1}`;
 
-        li.innerHTML = `
-            <span class="rank">${rankStr}</span>
-            <span class="team-name" style="flex:1; margin-left:1rem;">${escapeHTML(buzz.name)}</span>
-            <span class="time-diff" style="font-family:monospace; font-size:0.75rem; color:var(--primary-color); opacity:0.8;">${escapeHTML(buzz.timeStr)}</span>
-        `;
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'team-name';
+        nameSpan.style.flex = '1';
+        nameSpan.style.marginLeft = '1rem';
+        nameSpan.textContent = buzz.name;
 
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'time-diff';
+        timeSpan.style.fontFamily = 'monospace';
+        timeSpan.style.fontSize = '0.75rem';
+        timeSpan.style.color = 'var(--primary-color)';
+        timeSpan.style.opacity = '0.8';
+        timeSpan.textContent = buzz.timeStr || '';
+
+        li.appendChild(rankSpan);
+        li.appendChild(nameSpan);
+        li.appendChild(timeSpan);
         container.appendChild(li);
     });
 }
@@ -1094,16 +1424,25 @@ function renderHostLeaderboard(teamsWithPoints) {
     sorted.forEach(team => {
         const div = document.createElement('div');
         div.className = 'points-pill';
-        div.innerHTML = `
-            <div style="display:flex; justify-content:space-between; width:100%; align-items:center;">
-                <span style="font-weight:600;">${escapeHTML(team.name)}</span>
-                <span class="score" style="margin-left:1rem;">${Number(team.points) || 0}</span>
-            </div>
-        `;
+
+        const innerDiv = document.createElement('div');
+        innerDiv.style.display = 'flex';
+        innerDiv.style.justifyContent = 'space-between';
+        innerDiv.style.width = '100%';
+        innerDiv.style.alignItems = 'center';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.style.fontWeight = '600';
+        nameSpan.textContent = team.name;
+
+        const scoreSpan = document.createElement('span');
+        scoreSpan.className = 'score';
+        scoreSpan.style.marginLeft = '1rem';
+        scoreSpan.textContent = Number(team.points) || 0;
+
+        innerDiv.appendChild(nameSpan);
+        innerDiv.appendChild(scoreSpan);
+        div.appendChild(innerDiv);
         hostLeaderboardSummary.appendChild(div);
     });
-}
-
-function renderPlayerPoints(teamsWithPoints) {
-    // This is now disabled for players
 }
