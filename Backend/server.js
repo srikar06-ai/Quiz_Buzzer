@@ -635,6 +635,38 @@ io.on('connection', (socket) => {
                 group.lastHeartbeat = Date.now();
                 group.visibilityState = typeof visibilityState === 'string' ? visibilityState : 'visible';
                 group.hasFocus = typeof hasFocus === 'boolean' ? hasFocus : true;
+
+                // Server-enforced anti-cheat check on heartbeat
+                if ((group.visibilityState === 'hidden' || group.hasFocus === false) && !room.activeViolations[socket.id]) {
+                    const date = new Date();
+                    const timeStr = date.toTimeString().split(' ')[0];
+                    const vType = group.visibilityState === 'hidden' ? 'TAB_SWITCH' : 'WINDOW_BLUR';
+
+                    room.activeViolations[socket.id] = {
+                        socketId: socket.id,
+                        name: group.name,
+                        type: vType,
+                        timeStr: timeStr,
+                        fullscreen: false,
+                        visibilityState: group.visibilityState,
+                        hasFocus: group.hasFocus,
+                        details: 'Heartbeat detected tab switch or lost window focus',
+                        status: 'Waiting for re-entry',
+                        timestamp: Date.now()
+                    };
+
+                    const violatorNames = Object.values(room.activeViolations).map(v => v.name || v);
+                    const pendingNames = Object.values(room.pendingRequests);
+                    io.to(code).emit('global_freeze', {
+                        violatorNames,
+                        pendingNames,
+                        manualFreeze: room.manualFreeze
+                    });
+
+                    io.to(room.host).emit('tab_violation_alert', {
+                        violations: Object.values(room.activeViolations)
+                    });
+                }
             }
         } catch (err) {
             console.error('Error in participant_heartbeat:', err);

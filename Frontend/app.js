@@ -802,9 +802,25 @@ function sendViolation(type, details = '') {
 
 // 1. Primary Anti-Cheat: Document Visibility Change Detection
 document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') {
+    if (!isHost && currentRoomCode && document.visibilityState === 'hidden') {
         lockQuizUI();
         sendViolation('TAB_SWITCH', 'Switched browser tab or minimized application');
+    }
+});
+
+// 2. Window Blur Detection (Lost window focus: e.g. clicking out of window, opening ChatGPT/Google, side window, split screen)
+window.addEventListener('blur', () => {
+    if (!isHost && currentRoomCode) {
+        lockQuizUI();
+        sendViolation('WINDOW_BLUR', 'Lost browser window focus');
+    }
+});
+
+// 3. Page Hide Detection (Mobile app switching / navigation)
+window.addEventListener('pagehide', () => {
+    if (!isHost && currentRoomCode) {
+        lockQuizUI();
+        sendViolation('TAB_SWITCH', 'Navigated away or switched apps on mobile device');
     }
 });
 
@@ -826,12 +842,20 @@ document.addEventListener('contextmenu', (e) => {
 // 5. Periodic Lightweight Participant Heartbeat Loop (Every 4s)
 setInterval(() => {
     if (!isHost && currentRoomCode && currentGroupName) {
+        const hasFocus = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+        const isHidden = document.visibilityState === 'hidden';
+
+        if (!hasFocus || isHidden) {
+            lockQuizUI();
+            sendViolation(isHidden ? 'TAB_SWITCH' : 'WINDOW_BLUR', 'Heartbeat detected lost focus or hidden tab');
+        }
+
         socket.emit('participant_heartbeat', {
             code: currentRoomCode,
             groupName: currentGroupName,
             fullscreen: isFullscreenActive(),
             visibilityState: document.visibilityState || 'visible',
-            hasFocus: typeof document.hasFocus === 'function' ? document.hasFocus() : true,
+            hasFocus: hasFocus,
             timestamp: Date.now()
         });
     }
