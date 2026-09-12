@@ -636,21 +636,20 @@ io.on('connection', (socket) => {
                 group.visibilityState = typeof visibilityState === 'string' ? visibilityState : 'visible';
                 group.hasFocus = typeof hasFocus === 'boolean' ? hasFocus : true;
 
-                // Server-enforced anti-cheat check on heartbeat
-                if ((group.visibilityState === 'hidden' || group.hasFocus === false) && !room.activeViolations[socket.id]) {
+                // Strong anti-cheat signal ONLY when visibilityState is 'hidden'
+                if (group.visibilityState === 'hidden' && !room.activeViolations[socket.id]) {
                     const date = new Date();
                     const timeStr = date.toTimeString().split(' ')[0];
-                    const vType = group.visibilityState === 'hidden' ? 'TAB_SWITCH' : 'WINDOW_BLUR';
 
                     room.activeViolations[socket.id] = {
                         socketId: socket.id,
                         name: group.name,
-                        type: vType,
+                        type: 'TAB_SWITCH',
                         timeStr: timeStr,
                         fullscreen: false,
                         visibilityState: group.visibilityState,
                         hasFocus: group.hasFocus,
-                        details: 'Heartbeat detected tab switch or lost window focus',
+                        details: 'Participant switched browser tab or minimized app',
                         status: 'Waiting for re-entry',
                         timestamp: Date.now()
                     };
@@ -687,7 +686,7 @@ io.on('connection', (socket) => {
             const group = room.groups[socket.id];
             if (group) {
                 if (room.activeViolations[socket.id]) {
-                    room.activeViolations[socket.id].status = 'Returned to game (Waiting for Host)';
+                    room.activeViolations[socket.id].status = 'Returned to quiz (Waiting for Host)';
                 }
                 if (room.host) {
                     io.to(room.host).emit('participant_returned_alert', {

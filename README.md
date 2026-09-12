@@ -5,7 +5,7 @@ Real-time, microsecond-precision web quiz buzzer application with multi-layered 
 ## 🚀 Features
 
 - **Microsecond Precision Buzzing**: High-precision timestamp tracking on the server for accurate buzzer rankings.
-- **Tab & App Switch Avoidance & Lock Screen**: Non-dismissible blocking Lock Screen (`z-index: 20000`) whenever a participant switches tabs or minimizes the browser application. Requires tapping "Return to Game" to send `participant_returned` status.
+- **Tab & App Switch Avoidance & Lock Screen**: Non-dismissible blocking Lock Screen (`z-index: 20000`) whenever a participant switches tabs or minimizes the browser application. Requires tapping "Return to Quiz" to send `participant_returned` status.
 - **Server-Side Buzz Protection**: Buzz attempts received while a participant is in an active violation state are rejected on the server (`buzz_rejected`), preventing DevTools/DOM manipulation bypasses.
 - **System UI & Focus Detection**: Captures observable focus shifts (`window.blur` while visible) as `SUSPICIOUS_SYSTEM_UI` alerts on the Host Dashboard.
 - **Participant Presence Heartbeat**: Periodic 4-second client heartbeats with automatic 12-second server timeout detection (`HEARTBEAT_TIMEOUT`).

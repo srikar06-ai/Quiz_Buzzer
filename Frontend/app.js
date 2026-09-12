@@ -185,20 +185,100 @@ if (btnCopyLeaderboard) {
                 return;
             }
             const sortedTeams = [...connectedTeams].sort((a, b) => (b.points || 0) - (a.points || 0));
-            let text = `🏆 Quiz Leaderboard - Room ${currentRoomCode || ''}\n`;
-            text += `----------------------------------------\n`;
-            sortedTeams.forEach((t, i) => {
-                const medal = i === 0 ? '🥇 ' : i === 1 ? '🥈 ' : i === 2 ? '🥉 ' : `#${i + 1} `;
-                text += `${medal}${t.name}: ${t.points || 0} pts\n`;
-            });
-            text += `----------------------------------------\n`;
-            text += `Generated on ${new Date().toLocaleString()}`;
 
-            await copyToClipboard(text);
-            showToast('Leaderboard copied to clipboard!', 'success');
+            // Create temporary container for html2canvas rendering
+            const container = document.createElement('div');
+            container.style.cssText = `
+                position: fixed;
+                left: -9999px;
+                top: -9999px;
+                background-color: #0f172a;
+                color: #ffffff;
+                padding: 24px;
+                border-radius: 16px;
+                width: 440px;
+                font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+                z-index: -9999;
+            `;
+
+            const title = document.createElement('div');
+            title.style.cssText = 'color: #38bdf8; font-size: 20px; font-weight: 700; margin-bottom: 20px; text-align: left;';
+            title.textContent = `Leaderboard - Room ${currentRoomCode || ''}`;
+            container.appendChild(title);
+
+            const list = document.createElement('div');
+            list.style.cssText = 'display: flex; flex-direction: column; gap: 10px;';
+
+            sortedTeams.forEach((team, index) => {
+                const row = document.createElement('div');
+                row.style.cssText = 'display: flex; justify-content: space-between; align-items: center; background: #1e293b; padding: 12px 16px; border-radius: 10px;';
+
+                const left = document.createElement('div');
+                left.style.cssText = 'display: flex; align-items: center; gap: 14px;';
+
+                const rank = document.createElement('span');
+                rank.style.cssText = 'color: #38bdf8; font-weight: 700; font-size: 16px; min-width: 30px;';
+                rank.textContent = `#${index + 1}`;
+
+                const name = document.createElement('span');
+                name.style.cssText = 'color: #ffffff; font-weight: 600; font-size: 16px;';
+                name.textContent = team.name;
+
+                left.appendChild(rank);
+                left.appendChild(name);
+
+                const pts = document.createElement('span');
+                pts.style.cssText = 'color: #4ade80; font-weight: 700; font-size: 16px;';
+                pts.textContent = `${team.points || 0} pts`;
+
+                row.appendChild(left);
+                row.appendChild(pts);
+                list.appendChild(row);
+            });
+
+            container.appendChild(list);
+            document.body.appendChild(container);
+
+            try {
+                if (typeof html2canvas !== 'function') {
+                    throw new Error('html2canvas library unavailable');
+                }
+
+                const canvas = await html2canvas(container, {
+                    backgroundColor: '#0f172a',
+                    scale: 2,
+                    logging: false
+                });
+
+                const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+                if (!blob) throw new Error('Canvas blob generation failed');
+
+                let copied = false;
+                if (navigator.clipboard && window.ClipboardItem && navigator.clipboard.write) {
+                    try {
+                        const item = new ClipboardItem({ 'image/png': blob });
+                        await navigator.clipboard.write([item]);
+                        copied = true;
+                        showToast('Leaderboard image copied to clipboard!', 'success');
+                    } catch (clipErr) {
+                        console.warn('ClipboardItem write failed, falling back to download:', clipErr);
+                    }
+                }
+
+                if (!copied) {
+                    const link = document.createElement('a');
+                    link.download = `Leaderboard_Room_${currentRoomCode || 'Quiz'}.png`;
+                    link.href = canvas.toDataURL('image/png');
+                    link.click();
+                    showToast('Image clipboard unsupported in browser. Downloaded PNG image!', 'info');
+                }
+            } finally {
+                container.remove();
+            }
         } catch (err) {
-            console.error('Failed to copy leaderboard:', err);
-            showToast('Failed to copy leaderboard', 'error');
+            console.error('Failed to copy leaderboard image:', err);
+            showToast('Image clipboard is not supported in this browser.', 'error');
         }
     });
 }
@@ -257,9 +337,9 @@ buzzerBtn.addEventListener('click', () => {
 
     // Only buzz if it is active (not buzzed and buzzers allowed)
     if (buzzerBtn.classList.contains('active')) {
-        // Strong tactile vibration pulse if supported on device
+        // Mild single vibration pulse if supported on device
         if ('vibrate' in navigator) {
-            try { navigator.vibrate([60, 40, 60]); } catch (e) {}
+            try { navigator.vibrate(20); } catch (e) {}
         }
 
         // Optimistic UI update: Immediately transition to BUZZED (Sky Blue)
@@ -545,9 +625,6 @@ socket.on('joined_room', (data) => {
 // PLAYER: Buzz response from server
 socket.on('buzz_registered', (data) => {
     setPlayerBuzzerState('buzzed', data ? data.rank : null);
-    if ('vibrate' in navigator) {
-        try { navigator.vibrate([80, 50, 80]); } catch (e) {}
-    }
 });
 
 // PLAYER: Server-side Buzz Rejection (DevTools or UI bypass prevention)
@@ -895,20 +972,14 @@ document.addEventListener('visibilitychange', () => {
     }
 });
 
-// 2. Window Blur Detection (Lost window focus: e.g. clicking out of window, opening ChatGPT/Google, side window, split screen)
+// 2. Window Blur (Keep for lifecycle tracking only; do NOT trigger cheating violations to prevent iPhone false positives)
 window.addEventListener('blur', () => {
-    if (!isHost && currentRoomCode) {
-        lockQuizUI();
-        sendViolation('WINDOW_BLUR', 'Lost browser window focus');
-    }
+    // Weak focus signal: do NOT trigger cheating violation
 });
 
-// 3. Page Hide Detection (Mobile app switching / navigation)
+// 3. Page Hide (Keep for lifecycle tracking only; do NOT trigger cheating violations to prevent iPhone false positives)
 window.addEventListener('pagehide', () => {
-    if (!isHost && currentRoomCode) {
-        lockQuizUI();
-        sendViolation('TAB_SWITCH', 'Navigated away or switched apps on mobile device');
-    }
+    // Weak lifecycle signal: do NOT trigger cheating violation
 });
 
 // 4. Shortcut Blocking
@@ -932,9 +1003,10 @@ setInterval(() => {
         const hasFocus = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
         const isHidden = document.visibilityState === 'hidden';
 
-        if (!hasFocus || isHidden) {
+        // ONLY actual visibilityState === 'hidden' triggers anti-cheat violation
+        if (isHidden) {
             lockQuizUI();
-            sendViolation(isHidden ? 'TAB_SWITCH' : 'WINDOW_BLUR', 'Heartbeat detected lost focus or hidden tab');
+            sendViolation('TAB_SWITCH', 'Heartbeat detected hidden tab');
         }
 
         socket.emit('participant_heartbeat', {
