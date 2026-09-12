@@ -1120,6 +1120,9 @@ if (btnApproveWinner) {
     btnApproveWinner.addEventListener('click', () => {
         socket.emit('approve_winner_message', { code: currentRoomCode });
         if (winnerPromptModal) winnerPromptModal.classList.add('hidden');
+        if (isHost && lastGlobalResults) {
+            renderFinalLeaderboard(lastGlobalResults);
+        }
     });
 }
 
@@ -1127,6 +1130,9 @@ if (btnRejectWinner) {
     btnRejectWinner.addEventListener('click', () => {
         socket.emit('reject_winner_message', { code: currentRoomCode });
         if (winnerPromptModal) winnerPromptModal.classList.add('hidden');
+        if (isHost && lastGlobalResults) {
+            renderFinalLeaderboard(lastGlobalResults);
+        }
     });
 }
 
@@ -1138,6 +1144,21 @@ socket.on('winner_congratulations', (data) => {
         winnerCongratulationsModal.classList.remove('hidden');
     }
 });
+
+const btnWinnerDownloadPdf = document.getElementById('btn-winner-download-pdf');
+if (btnWinnerDownloadPdf) {
+    btnWinnerDownloadPdf.addEventListener('click', () => {
+        if (lastGlobalResults) {
+            generatePDF(lastGlobalResults);
+        } else {
+            showToast('Generating PDF report...', 'info');
+            setTimeout(() => {
+                if (lastGlobalResults) generatePDF(lastGlobalResults);
+                else showToast('Results data not ready', 'error');
+            }, 300);
+        }
+    });
+}
 
 if (btnCloseWinnerModal) {
     btnCloseWinnerModal.addEventListener('click', () => {
