@@ -184,8 +184,8 @@ btnJoinRoom.addEventListener('click', () => {
     const code = inputRoomCode.value.trim().toUpperCase();
     const name = inputGroupName.value.trim();
 
-    if (!code || code.length !== 6) {
-        showToast('Please enter a valid 6-letter room code', 'error');
+    if (!code || code.length !== 4) {
+        showToast('Please enter a valid 4-letter room code', 'error');
         return;
     }
     if (!name) {
@@ -208,9 +208,9 @@ buzzerBtn.addEventListener('click', () => {
 
     // Only buzz if it is active (not buzzed and buzzers allowed)
     if (buzzerBtn.classList.contains('active')) {
-        // Mild haptic vibration pulse if supported on device
+        // Strong tactile vibration pulse if supported on device
         if ('vibrate' in navigator) {
-            try { navigator.vibrate(20); } catch (e) {}
+            try { navigator.vibrate([60, 40, 60]); } catch (e) {}
         }
 
         // Optimistic UI update: Immediately transition to BUZZED (Sky Blue)
@@ -233,6 +233,15 @@ if (btnToggleBuzzers) {
         isBuzzerActive = !isBuzzerActive;
         socket.emit('toggle_buzzers', { code: currentRoomCode, active: isBuzzerActive });
         btnToggleBuzzers.textContent = isBuzzerActive ? 'Disable Buzzers' : 'Enable Buzzers';
+    });
+}
+
+if (btnEndQuiz) {
+    btnEndQuiz.addEventListener('click', () => {
+        if (confirm('Are you sure you want to end the quiz? This will close the room for everyone.')) {
+            socket.emit('toggle_buzzers', { code: currentRoomCode, active: false });
+            socket.emit('room_closed_trigger', currentRoomCode);
+        }
     });
 }
 
@@ -463,6 +472,9 @@ socket.on('joined_room', (data) => {
 // PLAYER: Buzz response from server
 socket.on('buzz_registered', (data) => {
     setPlayerBuzzerState('buzzed', data ? data.rank : null);
+    if ('vibrate' in navigator) {
+        try { navigator.vibrate([80, 50, 80]); } catch (e) {}
+    }
 });
 
 // PLAYER: Server-side Buzz Rejection (DevTools or UI bypass prevention)

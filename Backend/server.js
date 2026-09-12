@@ -90,11 +90,11 @@ function cleanSocketState(socketId) {
     return roomCode;
 }
 
-// Cryptographically Strong 6-Letter Room Code Generator
+// Cryptographically Strong 4-Letter Room Code Generator
 function generateRoomCode() {
     const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
     let result = '';
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 4; i++) {
         const randomIndex = crypto.randomInt(0, characters.length);
         result += characters.charAt(randomIndex);
     }
@@ -103,7 +103,7 @@ function generateRoomCode() {
 
 // Input Validation Helpers
 function isValidRoomCode(code) {
-    return typeof code === 'string' && /^[A-Z]{6}$/.test(code.trim().toUpperCase());
+    return typeof code === 'string' && /^[A-Z]{4}$/.test(code.trim().toUpperCase());
 }
 
 function isValidName(name) {
@@ -301,7 +301,7 @@ io.on('connection', (socket) => {
 
             let { code, name, sessionToken } = payload;
             if (!isValidRoomCode(code) || !isValidName(name)) {
-                socket.emit('error', 'Room code must be 6 letters and name must be 1-30 characters.');
+                socket.emit('error', 'Room code must be 4 letters and name must be 1-30 characters.');
                 return;
             }
 
