@@ -59,6 +59,11 @@ const disqualifyMsg = document.getElementById('disqualify-msg');
 const btnConfirmDisqualify = document.getElementById('btn-confirm-disqualify');
 const btnCancelDisqualify = document.getElementById('btn-cancel-disqualify');
 
+// End Quiz Modal Elements
+const endQuizModal = document.getElementById('end-quiz-modal');
+const btnConfirmEndQuiz = document.getElementById('btn-confirm-end-quiz');
+const btnCancelEndQuiz = document.getElementById('btn-cancel-end-quiz');
+
 // Winner Modals
 const winnerPromptModal = document.getElementById('winner-prompt-modal');
 const winnerPromptMsg = document.getElementById('winner-prompt-msg');
@@ -282,10 +287,34 @@ if (btnToggleBuzzers) {
 
 if (btnEndQuiz) {
     btnEndQuiz.addEventListener('click', () => {
-        if (confirm('Are you sure you want to end the quiz? This will close the room for everyone.')) {
-            socket.emit('toggle_buzzers', { code: currentRoomCode, active: false });
-            socket.emit('room_closed_trigger', currentRoomCode);
+        const code = currentRoomCode || sessionStorage.getItem('quiz_room_code');
+        if (!code) {
+            showToast('No active room found', 'error');
+            return;
         }
+        if (endQuizModal) {
+            endQuizModal.classList.remove('hidden');
+        } else {
+            socket.emit('toggle_buzzers', { code, active: false });
+            socket.emit('room_closed_trigger', code);
+        }
+    });
+}
+
+if (btnConfirmEndQuiz) {
+    btnConfirmEndQuiz.addEventListener('click', () => {
+        const code = currentRoomCode || sessionStorage.getItem('quiz_room_code');
+        if (endQuizModal) endQuizModal.classList.add('hidden');
+        if (code) {
+            socket.emit('toggle_buzzers', { code, active: false });
+            socket.emit('room_closed_trigger', code);
+        }
+    });
+}
+
+if (btnCancelEndQuiz) {
+    btnCancelEndQuiz.addEventListener('click', () => {
+        if (endQuizModal) endQuizModal.classList.add('hidden');
     });
 }
 

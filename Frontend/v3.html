@@ -223,6 +223,18 @@
         </div>
     </div>
 
+    <!-- End Quiz Confirmation Modal -->
+    <div id="end-quiz-modal" class="modal-overlay hidden" style="z-index: 25000;">
+        <div class="modal-content danger-glow" style="text-align:center;">
+            <h2 style="color:#ef4444">🏁 END QUIZ CONFIRMATION</h2>
+            <p style="margin-top:1rem; font-size:1.05rem;">Are you sure you want to end the quiz? This will close the room for everyone and calculate final standings.</p>
+            <div class="modal-actions" style="margin-top:1.5rem; display:flex; gap:10px; justify-content:center;">
+                <button id="btn-confirm-end-quiz" class="btn danger-btn" style="flex:1; padding:0.8rem;">Yes, End Quiz</button>
+                <button id="btn-cancel-end-quiz" class="btn secondary-btn" style="flex:1; padding:0.8rem;">Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Host Alert Modal (Tab Switch) -->
     <div id="host-alert-modal" class="modal-overlay hidden">
         <div class="modal-content danger-glow" style="width: 500px;">
