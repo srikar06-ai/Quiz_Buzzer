@@ -141,15 +141,59 @@ function showToast(message, type = 'info') {
     }, 3000);
 }
 
+async function copyToClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+    } else {
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        textArea.style.top = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        document.execCommand('copy');
+        textArea.remove();
+    }
+}
+
 // Copy Room Code event listener
 if (displayRoomCode) {
     displayRoomCode.addEventListener('click', async () => {
         try {
             if (!currentRoomCode) return;
-            await navigator.clipboard.writeText(currentRoomCode);
+            await copyToClipboard(currentRoomCode);
             showToast('Room Code copied to clipboard', 'success');
         } catch (err) {
             showToast('Failed to copy', 'error');
+        }
+    });
+}
+
+// Copy Leaderboard event listener
+if (btnCopyLeaderboard) {
+    btnCopyLeaderboard.addEventListener('click', async () => {
+        try {
+            if (!connectedTeams || connectedTeams.length === 0) {
+                showToast('No teams in leaderboard to copy', 'error');
+                return;
+            }
+            const sortedTeams = [...connectedTeams].sort((a, b) => (b.points || 0) - (a.points || 0));
+            let text = `🏆 Quiz Leaderboard - Room ${currentRoomCode || ''}\n`;
+            text += `----------------------------------------\n`;
+            sortedTeams.forEach((t, i) => {
+                const medal = i === 0 ? '🥇 ' : i === 1 ? '🥈 ' : i === 2 ? '🥉 ' : `#${i + 1} `;
+                text += `${medal}${t.name}: ${t.points || 0} pts\n`;
+            });
+            text += `----------------------------------------\n`;
+            text += `Generated on ${new Date().toLocaleString()}`;
+
+            await copyToClipboard(text);
+            showToast('Leaderboard copied to clipboard!', 'success');
+        } catch (err) {
+            console.error('Failed to copy leaderboard:', err);
+            showToast('Failed to copy leaderboard', 'error');
         }
     });
 }
