@@ -4,7 +4,6 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.socket.io https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ws: wss:;">
     <title>Quiz Buzzer - V3-UPDATED</title>
     <!-- Fonts -->
     <link
@@ -188,7 +187,7 @@
 
             <div class="modal-actions" style="margin-top: 1rem;">
                 <button id="btn-warning-stay" class="btn primary-btn" style="width: 100%; padding: 1rem; font-size: 1.1rem; background: #ef4444; color: white;">
-                    RETURN TO GAME
+                    RETURN TO QUIZ
                 </button>
             </div>
         </div>
@@ -257,6 +256,32 @@
         </div>
     </div>
 
+    <!-- Host Winner Prompt Modal -->
+    <div id="winner-prompt-modal" class="modal-overlay hidden" style="z-index: 25000;">
+        <div class="modal-content glass-panel" style="max-width: 450px; text-align: center;">
+            <div style="font-size: 3rem; margin-bottom: 0.5rem;">🏆</div>
+            <h2 style="color: var(--primary-color); font-size: 1.6rem; margin-bottom: 0.5rem;">WINNER DETECTED</h2>
+            <p id="winner-prompt-msg" style="color: #f8fafc; font-size: 1rem; margin-bottom: 1.5rem;"></p>
+            <div class="modal-actions" style="display: flex; gap: 0.8rem; justify-content: center;">
+                <button id="btn-approve-winner" class="btn primary-btn" style="flex: 1; padding: 0.8rem;">Send Congratulations</button>
+                <button id="btn-reject-winner" class="btn secondary-btn" style="flex: 1; padding: 0.8rem;">Not Now</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Winner Congratulations Modal (Player) -->
+    <div id="winner-congratulations-modal" class="modal-overlay hidden" style="z-index: 30000; background: rgba(0, 0, 0, 0.9);">
+        <div class="modal-content glass-panel" style="max-width: 480px; text-align: center; border: 2px solid var(--primary-color);">
+            <div style="font-size: 4rem; margin-bottom: 0.5rem;">🎉 🏆 🎉</div>
+            <h2 style="color: #38bdf8; font-size: 2rem; margin-bottom: 0.8rem;">CONGRATULATIONS!</h2>
+            <p style="font-size: 1.2rem; color: #fff; font-weight: 700; margin-bottom: 0.5rem;">You are the Winner of the Quiz!</p>
+            <p id="winner-congratulations-score" style="font-size: 1.1rem; color: #4ade80; margin-bottom: 1.5rem;"></p>
+            <div class="modal-actions">
+                <button id="btn-close-winner-modal" class="btn primary-btn" style="width: 100%; padding: 0.9rem;">Awesome!</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Waiting for Approval Modal (Player) -->
     <div id="waiting-modal" class="modal-overlay hidden">
         <div class="modal-content glass-panel" style="text-align:center;">
@@ -277,18 +302,7 @@
     <script src="/socket.io/socket.io.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-    <script src="app.js?v=3"></script>
-    
-    <script>
-        // Force hide elements as an extra safety measure against cache
-        document.addEventListener('DOMContentLoaded', () => {
-            const statusContainer = document.getElementById('player-status-container');
-            if (statusContainer) statusContainer.innerHTML = '';
-            
-            // Log to confirm this version is active
-            console.log("QUIZ BUZZER V3 - UPDATED UI");
-        });
-    </script>
+    <script src="app.js?v=4"></script>
 </body>
 
 </html>

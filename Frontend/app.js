@@ -52,13 +52,21 @@ const waitingModal = document.getElementById('waiting-modal');
 const leaderboardModal = document.getElementById('leaderboard-modal');
 const leaderboardContainer = document.getElementById('leaderboard-container');
 const btnDownloadPdf = document.getElementById('btn-download-pdf');
-const btnCloseLeaderboard = document.getElementById('btn-close-leaderboard');
 
 // Host Confirm Modal
 const hostConfirmModal = document.getElementById('host-confirm-modal');
 const disqualifyMsg = document.getElementById('disqualify-msg');
 const btnConfirmDisqualify = document.getElementById('btn-confirm-disqualify');
 const btnCancelDisqualify = document.getElementById('btn-cancel-disqualify');
+
+// Winner Modals
+const winnerPromptModal = document.getElementById('winner-prompt-modal');
+const winnerPromptMsg = document.getElementById('winner-prompt-msg');
+const btnApproveWinner = document.getElementById('btn-approve-winner');
+const btnRejectWinner = document.getElementById('btn-reject-winner');
+const winnerCongratulationsModal = document.getElementById('winner-congratulations-modal');
+const winnerCongratulationsScore = document.getElementById('winner-congratulations-score');
+const btnCloseWinnerModal = document.getElementById('btn-close-winner-modal');
 
 // State Machine & Lock Controls
 const PLAYER_STATE = {
@@ -78,28 +86,6 @@ let isHost = false;
 let isBuzzerActive = true;
 let wakeLock = null;
 
-// Session Identity Storage Helper
-function saveSession(token, code, role, name) {
-    try {
-        localStorage.setItem('quiz_session', JSON.stringify({ token, code, role, name }));
-    } catch (e) {}
-}
-
-function clearSession() {
-    try {
-        localStorage.removeItem('quiz_session');
-    } catch (e) {}
-}
-
-function getSavedSession() {
-    try {
-        const raw = localStorage.getItem('quiz_session');
-        return raw ? JSON.parse(raw) : null;
-    } catch (e) {
-        return null;
-    }
-}
-
 // Host Window Protection
 window.addEventListener('beforeunload', (e) => {
     if (isHost && currentRoomCode) {
@@ -110,6 +96,15 @@ window.addEventListener('beforeunload', (e) => {
 });
 
 // ----------------- Helpers -----------------
+
+function getOrCreateSessionToken() {
+    let token = sessionStorage.getItem('quiz_session_token');
+    if (!token) {
+        token = 'sess_' + Math.random().toString(36).substring(2, 11) + Date.now().toString(36);
+        sessionStorage.setItem('quiz_session_token', token);
+    }
+    return token;
+}
 
 function escapeHTML(str) {
     if (str === null || str === undefined) return '';
@@ -146,26 +141,22 @@ function showToast(message, type = 'info') {
     }, 3000);
 }
 
-// Global copy function for the room code
-window.copyRoomCode = async () => {
-    if (!currentRoomCode) return;
-    try {
-        await navigator.clipboard.writeText(currentRoomCode);
-        showToast('Room Code copied to clipboard', 'success');
-    } catch (err) {
-        showToast('Failed to copy', 'error');
-    }
-};
-
+// Copy Room Code event listener
 if (displayRoomCode) {
-    displayRoomCode.addEventListener('click', () => {
-        window.copyRoomCode();
+    displayRoomCode.addEventListener('click', async () => {
+        try {
+            if (!currentRoomCode) return;
+            await navigator.clipboard.writeText(currentRoomCode);
+            showToast('Room Code copied to clipboard', 'success');
+        } catch (err) {
+            showToast('Failed to copy', 'error');
+        }
     });
 }
 
+const btnCloseLeaderboard = document.getElementById('btn-close-leaderboard');
 if (btnCloseLeaderboard) {
     btnCloseLeaderboard.addEventListener('click', () => {
-        clearSession();
         window.location.reload();
     });
 }
@@ -173,7 +164,8 @@ if (btnCloseLeaderboard) {
 // ----------------- Event Listeners (UI) -----------------
 
 btnCreateRoom.addEventListener('click', () => {
-    socket.emit('create_room');
+    const sessionToken = getOrCreateSessionToken();
+    socket.emit('create_room', { sessionToken });
 });
 
 inputRoomCode.addEventListener('input', () => {
@@ -202,7 +194,8 @@ btnJoinRoom.addEventListener('click', () => {
     }
 
     currentRoomCode = code;
-    socket.emit('join_room', { code, name });
+    const sessionToken = getOrCreateSessionToken();
+    socket.emit('join_room', { code, name, sessionToken });
 });
 
 buzzerBtn.addEventListener('click', () => {
@@ -215,6 +208,11 @@ buzzerBtn.addEventListener('click', () => {
 
     // Only buzz if it is active (not buzzed and buzzers allowed)
     if (buzzerBtn.classList.contains('active')) {
+        // Mild haptic vibration pulse if supported on device
+        if ('vibrate' in navigator) {
+            try { navigator.vibrate(20); } catch (e) {}
+        }
+
         // Optimistic UI update: Immediately transition to BUZZED (Sky Blue)
         setPlayerBuzzerState('buzzed');
         buzzerBtn.classList.add('pressed');
@@ -238,10 +236,10 @@ if (btnToggleBuzzers) {
     });
 }
 
-// Global update points function for Host controls
-window.updatePoints = (targetSocketId, delta) => {
+// Update points function
+function updatePoints(targetSocketId, delta) {
     socket.emit('update_points', { code: currentRoomCode, targetSocketId, delta });
-};
+}
 
 // Use touchstart for faster response on mobile
 buzzerBtn.addEventListener('touchstart', (e) => {
@@ -249,52 +247,104 @@ buzzerBtn.addEventListener('touchstart', (e) => {
     buzzerBtn.click();
 }, { passive: false });
 
+
 if (btnWarningLeave) {
     btnWarningLeave.addEventListener('click', () => {
-        clearSession();
         window.location.reload();
     });
 }
 
-// ----------------- Socket.IO & Session Listeners -----------------
+// ----------------- Socket.IO Listeners -----------------
 
-// Auto-reconnect on socket connection using lightweight session token
 socket.on('connect', () => {
-    const saved = getSavedSession();
-    if (saved && saved.token && saved.code) {
-        socket.emit('session_resume', { token: saved.token, code: saved.code });
+    const token = sessionStorage.getItem('quiz_session_token');
+    const savedRoom = sessionStorage.getItem('quiz_room_code') || currentRoomCode;
+    if (token && savedRoom) {
+        socket.emit('session_resume', { sessionToken: token });
     }
 });
 
 socket.on('session_restored', (data) => {
+    if (!data) return;
+    currentRoomCode = data.code;
+    sessionStorage.setItem('quiz_room_code', data.code);
+
     if (data.role === 'host') {
         isHost = true;
-        currentRoomCode = data.code;
-        connectedTeams = data.teams || [];
-        displayRoomCode.textContent = data.code;
+        connectedTeams = data.connectedTeams || [];
+        displayRoomCode.textContent = currentRoomCode;
+        if (buzzesList) renderBuzzesList(data.buzzes || [], buzzesList);
         renderTeams();
-        if (data.buzzes) renderBuzzesView(data.buzzes);
-        if (data.disqualified) renderDisqualified(data.disqualified);
+        renderHostLeaderboard(connectedTeams);
+        renderDisqualified(data.disqualified || []);
+        if (requestsList) {
+            renderRequestsList(data.pendingRequests || []);
+        }
+        if (btnToggleBuzzers) {
+            btnToggleBuzzers.textContent = data.buzzesAllowed ? 'Disable Buzzers' : 'Enable Buzzers';
+        }
         switchView('host');
-        showToast('Host session restored!', 'success');
-    } else if (data.role === 'participant') {
+        showToast('Host session restored', 'success');
+    } else {
         isHost = false;
-        currentRoomCode = data.code;
         currentGroupName = data.name;
         displayGroupName.textContent = currentGroupName;
         playerRoomCode.textContent = currentRoomCode;
+        if (waitingModal) waitingModal.classList.add('hidden');
 
-        if (data.buzzesAllowed) setPlayerBuzzerState('active');
-        else setPlayerBuzzerState('disabled');
-
-        if (data.buzzes) renderBuzzesView(data.buzzes);
+        if (data.isDisqualified) {
+            if (disqualifiedModal) disqualifiedModal.classList.remove('hidden');
+        } else if (data.isLocked) {
+            lockQuizUI();
+        } else {
+            unlockQuizUI();
+            if (data.buzzed) {
+                setPlayerBuzzerState('buzzed');
+            } else if (data.buzzesAllowed) {
+                setPlayerBuzzerState('active');
+            } else {
+                setPlayerBuzzerState('disabled');
+            }
+        }
         switchView('player');
-        showToast('Player session restored!', 'success');
+        showToast('Participant session restored', 'success');
     }
 });
 
 socket.on('session_invalid', () => {
-    clearSession();
+    sessionStorage.removeItem('quiz_session_token');
+    sessionStorage.removeItem('quiz_room_code');
+    currentRoomCode = '';
+    currentGroupName = '';
+    switchView('home');
+});
+
+socket.on('session_expired', (data) => {
+    sessionStorage.removeItem('quiz_session_token');
+    sessionStorage.removeItem('quiz_room_code');
+    currentRoomCode = '';
+    currentGroupName = '';
+    switchView('home');
+    showToast(data && data.message ? data.message : 'Your quiz session has expired. Please rejoin the room.', 'error');
+});
+
+socket.on('disconnect', (reason) => {
+    if (!isHost && currentRoomCode) {
+        showToast('Connection lost. Reconnecting...', 'error');
+        if (playerStatusText) {
+            playerStatusText.textContent = 'Connection lost. Reconnecting...';
+            playerStatusText.style.color = '#f59e0b';
+        }
+    }
+});
+
+socket.on('group_connection_status', (data) => {
+    if (!isHost || !data) return;
+    const team = connectedTeams.find(t => t.socketId === data.socketId || t.name === data.name);
+    if (team) {
+        team.disconnected = !data.connected;
+        renderTeams();
+    }
 });
 
 socket.on('error', (msg) => {
@@ -302,150 +352,14 @@ socket.on('error', (msg) => {
     if (waitingModal) waitingModal.classList.add('hidden');
 });
 
-// Wake Lock Helper
-window.requestFullScreen = async function () {
-    try {
-        if ('wakeLock' in navigator) {
-            wakeLock = await navigator.wakeLock.request('screen');
-        }
-    } catch (e) {
-        console.log("Wake lock error:", e);
-    }
-}
-
-async function releaseImmersiveMode() {
-    try {
-        if (wakeLock) {
-            await wakeLock.release();
-            wakeLock = null;
-        }
-    } catch (e) { console.log(e); }
-}
-
-// HOST: End Quiz
-if (btnEndQuiz) {
-    btnEndQuiz.addEventListener('click', () => {
-        if (confirm('Are you sure you want to end the quiz? This will close the room for everyone.')) {
-            socket.emit('toggle_buzzers', { code: currentRoomCode, active: false });
-            socket.emit('room_closed_trigger', currentRoomCode);
-            clearSession();
-        }
-    });
-}
-
-// HOST: Copy Leaderboard Image
-if (btnCopyLeaderboard) {
-    btnCopyLeaderboard.addEventListener('click', async () => {
-        if (connectedTeams.length === 0) return;
-
-        // Temporarily create a hidden container for the snapshot
-        const snapshotContainer = document.createElement('div');
-        snapshotContainer.style.position = 'fixed';
-        snapshotContainer.style.left = '-9999px';
-        snapshotContainer.style.top = '0';
-        snapshotContainer.style.background = '#0f172a';
-        snapshotContainer.style.color = 'white';
-        snapshotContainer.style.padding = '40px';
-        snapshotContainer.style.width = 'fit-content';
-        snapshotContainer.style.fontFamily = 'Inter, sans-serif';
-
-        const title = document.createElement('h1');
-        title.textContent = `Leaderboard - Room ${currentRoomCode}`;
-        title.style.textAlign = 'center';
-        title.style.marginBottom = '30px';
-        title.style.color = '#38bdf8';
-        snapshotContainer.appendChild(title);
-
-        const listContainer = document.createElement('div');
-        listContainer.style.display = 'flex';
-        listContainer.style.gap = '40px';
-
-        const sorted = [...connectedTeams].sort((a, b) => b.points - a.points);
-
-        if (sorted.length > 25) {
-            // Two columns
-            const leftCol = document.createElement('div');
-            const rightCol = document.createElement('div');
-            leftCol.style.minWidth = '250px';
-            rightCol.style.minWidth = '250px';
-
-            sorted.slice(0, 25).forEach((team, i) => addTeamToSnapshot(leftCol, team, i + 1));
-            sorted.slice(25).forEach((team, i) => addTeamToSnapshot(rightCol, team, i + 26));
-
-            listContainer.appendChild(leftCol);
-            listContainer.appendChild(rightCol);
-        } else {
-            // Single column
-            const col = document.createElement('div');
-            col.style.minWidth = '300px';
-            sorted.forEach((team, i) => addTeamToSnapshot(col, team, i + 1));
-            listContainer.appendChild(col);
-        }
-
-        snapshotContainer.appendChild(listContainer);
-        document.body.appendChild(snapshotContainer);
-
-        try {
-            const canvas = await html2canvas(snapshotContainer);
-            canvas.toBlob(async blob => {
-                try {
-                    if (navigator.clipboard && window.ClipboardItem) {
-                        const item = new ClipboardItem({ "image/png": blob });
-                        await navigator.clipboard.write([item]);
-                        showToast('Leaderboard image copied to clipboard!', 'success');
-                    } else {
-                        showToast('Clipboard copy not supported in this browser', 'error');
-                    }
-                } catch (clipErr) {
-                    console.error('Clipboard write failed:', clipErr);
-                    showToast('Failed to copy image to clipboard.', 'error');
-                }
-            });
-        } catch (err) {
-            console.error('Snapshot failed:', err);
-            showToast('Failed to copy image.', 'error');
-        } finally {
-            document.body.removeChild(snapshotContainer);
-        }
-    });
-}
-
-function addTeamToSnapshot(parent, team, rank) {
-    const item = document.createElement('div');
-    item.style.display = 'flex';
-    item.style.justifyContent = 'space-between';
-    item.style.padding = '8px 12px';
-    item.style.marginBottom = '6px';
-    item.style.background = 'rgba(255,255,255,0.05)';
-    item.style.borderRadius = '6px';
-    item.style.fontSize = '14px';
-
-    const rankSpan = document.createElement('span');
-    const rankStrong = document.createElement('strong');
-    rankStrong.style.color = '#38bdf8';
-    rankStrong.style.marginRight = '10px';
-    rankStrong.textContent = `#${rank}`;
-    rankSpan.appendChild(rankStrong);
-    rankSpan.append(team.name);
-
-    const ptsSpan = document.createElement('span');
-    ptsSpan.style.fontWeight = '700';
-    ptsSpan.style.color = '#4ade80';
-    ptsSpan.textContent = `${Number(team.points) || 0} pts`;
-
-    item.appendChild(rankSpan);
-    item.appendChild(ptsSpan);
-    parent.appendChild(item);
-}
-
 // HOST: Room created
 socket.on('room_created', (data) => {
     isHost = true;
     const code = typeof data === 'object' ? data.code : data;
     const token = typeof data === 'object' ? data.sessionToken : null;
+    if (token) sessionStorage.setItem('quiz_session_token', token);
     currentRoomCode = code;
-
-    if (token) saveSession(token, code, 'host', 'Host');
+    sessionStorage.setItem('quiz_room_code', code);
 
     connectedTeams = [];
     displayRoomCode.textContent = code;
@@ -459,7 +373,8 @@ socket.on('room_created', (data) => {
 });
 
 // PLAYER: Waiting for approval
-socket.on('waiting_for_approval', () => {
+socket.on('waiting_for_approval', (data) => {
+    if (data && data.sessionToken) sessionStorage.setItem('quiz_session_token', data.sessionToken);
     if (waitingModal) waitingModal.classList.remove('hidden');
 });
 
@@ -469,68 +384,67 @@ socket.on('join_request', (data) => {
     showToast(`New join request: ${data.name}`, 'info');
 });
 
-// HOST: Update Requests List (Strict DOM manipulation - No inline event handlers)
+// HOST: Update Requests List
 socket.on('requests_update', (requests) => {
     if (!isHost || !requestsList) return;
+    renderRequestsList(requests);
+});
 
+function renderRequestsList(requests) {
+    if (!requestsList) return;
     requestsList.innerHTML = '';
     if (requests.length === 0) {
-        requestsList.innerHTML = '<li class="empty-state">No pending requests</li>';
+        const li = document.createElement('li');
+        li.className = 'empty-state';
+        li.textContent = 'No pending requests';
+        requestsList.appendChild(li);
         return;
     }
 
     requests.forEach(req => {
         const li = document.createElement('li');
         li.className = 'team-item';
-        li.style.display = 'flex';
-        li.style.justifyContent = 'space-between';
-        li.style.alignItems = 'center';
+        li.style.cssText = 'display:flex; justify-content:space-between; align-items:center;';
 
         const nameSpan = document.createElement('span');
         nameSpan.style.fontWeight = '600';
         nameSpan.textContent = req.name;
 
-        const btnDiv = document.createElement('div');
-        btnDiv.style.display = 'flex';
-        btnDiv.style.gap = '0.5rem';
+        const btnGroup = document.createElement('div');
+        btnGroup.style.cssText = 'display:flex; gap:0.5rem;';
 
         const allowBtn = document.createElement('button');
         allowBtn.className = 'btn primary-btn';
-        allowBtn.style.padding = '0.4rem 0.8rem';
-        allowBtn.style.fontSize = '0.8rem';
+        allowBtn.style.cssText = 'padding:0.4rem 0.8rem; font-size:0.8rem;';
         allowBtn.textContent = 'Allow';
-        allowBtn.addEventListener('click', () => {
-            resolveJoin(req.socketId, 'allow');
-        });
+        allowBtn.addEventListener('click', () => resolveJoin(req.socketId, 'allow'));
 
         const rejectBtn = document.createElement('button');
         rejectBtn.className = 'btn warning-btn';
-        rejectBtn.style.padding = '0.4rem 0.8rem';
-        rejectBtn.style.fontSize = '0.8rem';
+        rejectBtn.style.cssText = 'padding:0.4rem 0.8rem; font-size:0.8rem;';
         rejectBtn.textContent = 'Reject';
-        rejectBtn.addEventListener('click', () => {
-            resolveJoin(req.socketId, 'reject');
-        });
+        rejectBtn.addEventListener('click', () => resolveJoin(req.socketId, 'reject'));
 
-        btnDiv.appendChild(allowBtn);
-        btnDiv.appendChild(rejectBtn);
+        btnGroup.appendChild(allowBtn);
+        btnGroup.appendChild(rejectBtn);
+
         li.appendChild(nameSpan);
-        li.appendChild(btnDiv);
+        li.appendChild(btnGroup);
+
         requestsList.appendChild(li);
     });
-});
+}
 
-window.resolveJoin = (targetSocketId, action) => {
+function resolveJoin(targetSocketId, action) {
     socket.emit('resolve_join', { code: currentRoomCode, targetSocketId, action });
-};
+}
 
 // PLAYER: Joined room successfully
 socket.on('joined_room', (data) => {
     if (waitingModal) waitingModal.classList.add('hidden');
     currentRoomCode = data.code;
     currentGroupName = data.name;
-
-    if (data.sessionToken) saveSession(data.sessionToken, data.code, 'participant', data.name);
+    sessionStorage.setItem('quiz_room_code', data.code);
 
     displayGroupName.textContent = currentGroupName;
     playerRoomCode.textContent = currentRoomCode;
@@ -548,10 +462,10 @@ socket.on('joined_room', (data) => {
 
 // PLAYER: Buzz response from server
 socket.on('buzz_registered', (data) => {
-    setPlayerBuzzerState('buzzed', data.rank);
+    setPlayerBuzzerState('buzzed', data ? data.rank : null);
 });
 
-// PLAYER: Server-side Buzz Rejection
+// PLAYER: Server-side Buzz Rejection (DevTools or UI bypass prevention)
 socket.on('buzz_rejected', (data) => {
     showToast(data.message || 'Buzz rejected: Active violation pending!', 'error');
     lockQuizUI();
@@ -570,10 +484,12 @@ socket.on('buzzer_state', (data) => {
 
 // EVERYONE: Points Leaderboard Update
 socket.on('points_update', (teamsWithPoints) => {
-    connectedTeams = teamsWithPoints;
+    connectedTeams = teamsWithPoints; // Store for host
     if (isHost) {
         renderTeams();
         renderHostLeaderboard(teamsWithPoints);
+    } else {
+        // Participants don't see points anymore
     }
 });
 
@@ -591,15 +507,19 @@ socket.on('reset', (data) => {
 // HOST / PLAYER: Room closed with Final Results
 socket.on('room_closed', (results) => {
     releaseImmersiveMode();
-    clearSession();
+    sessionStorage.removeItem('quiz_room_code');
+    console.log("Room closed received. results:", !!results, "isHost:", isHost);
 
     if (isHost && results && (results.teams || results.disqualified)) {
+        console.log("I am Host - showing leaderboard modal.");
         lastGlobalResults = results;
         renderFinalLeaderboard(results);
     } else {
+        console.log("I am Participant - hiding leaderboard and resetting.");
         if (leaderboardModal) leaderboardModal.classList.add('hidden');
         showToast('The Host has ended the quiz.', 'error');
         setTimeout(() => {
+            sessionStorage.removeItem('quiz_session_token');
             window.location.reload();
         }, 3000);
     }
@@ -610,114 +530,46 @@ function renderFinalLeaderboard(results) {
 
     leaderboardContainer.innerHTML = '';
 
-    const infoDiv = document.createElement('div');
-    infoDiv.style.marginBottom = '2rem';
-
-    const roomP = document.createElement('p');
-    roomP.style.fontSize = '1.1rem';
-    roomP.style.color = 'var(--text-secondary)';
-    roomP.style.marginBottom = '0.5rem';
-    roomP.append('Room Code: ');
-    const codeStrong = document.createElement('strong');
-    codeStrong.style.color = 'var(--primary-color)';
-    codeStrong.textContent = results.code;
-    roomP.append(codeStrong);
-
-    const dateP = document.createElement('p');
-    dateP.style.fontSize = '0.9rem';
-    dateP.style.color = 'var(--text-secondary)';
-    dateP.textContent = `Date: ${new Date().toLocaleString()}`;
-
-    infoDiv.appendChild(roomP);
-    infoDiv.appendChild(dateP);
-
-    const standingsHeader = document.createElement('h4');
-    standingsHeader.style.marginBottom = '1rem';
-    standingsHeader.style.color = 'var(--success)';
-    standingsHeader.style.borderBottom = '1px solid rgba(255,255,255,0.1)';
-    standingsHeader.style.paddingBottom = '0.5rem';
-    standingsHeader.textContent = 'Final Standings';
-
-    const standingsContainer = document.createElement('div');
-    standingsContainer.style.display = 'flex';
-    standingsContainer.style.flexDirection = 'column';
-    standingsContainer.style.gap = '0.8rem';
-    standingsContainer.style.marginBottom = '2rem';
-
+    // Sort teams by points
     const sortedTeams = [...results.teams].sort((a, b) => b.points - a.points);
+
+    let html = `
+        <div style="margin-bottom: 2rem;">
+            <p style="font-size: 1.1rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Room Code: <strong style="color:var(--primary-color)">${escapeHTML(results.code)}</strong></p>
+            <p style="font-size: 0.9rem; color: var(--text-secondary);">Date: ${escapeHTML(new Date().toLocaleString())}</p>
+        </div>
+        
+        <h4 style="margin-bottom: 1rem; color: var(--success); border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem;">Final Standings</h4>
+        <div style="display:flex; flex-direction:column; gap: 0.8rem; margin-bottom: 2rem;">
+    `;
+
     sortedTeams.forEach((team, index) => {
         const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`;
-        const itemDiv = document.createElement('div');
-        itemDiv.style.display = 'flex';
-        itemDiv.style.justifyContent = 'space-between';
-        itemDiv.style.alignItems = 'center';
-        itemDiv.style.background = 'rgba(255,255,255,0.05)';
-        itemDiv.style.padding = '1rem';
-        itemDiv.style.borderRadius = '8px';
-
-        const left = document.createElement('div');
-        left.style.display = 'flex';
-        left.style.alignItems = 'center';
-        left.style.gap = '1rem';
-
-        const medalSpan = document.createElement('span');
-        medalSpan.style.fontWeight = '800';
-        medalSpan.style.fontSize = '1.2rem';
-        medalSpan.style.minWidth = '30px';
-        medalSpan.style.color = 'var(--primary-color)';
-        medalSpan.textContent = medal;
-
-        const nameSpan = document.createElement('span');
-        nameSpan.style.fontWeight = '600';
-        nameSpan.textContent = team.name;
-
-        left.appendChild(medalSpan);
-        left.appendChild(nameSpan);
-
-        const pointsSpan = document.createElement('span');
-        pointsSpan.style.fontWeight = '800';
-        pointsSpan.style.color = 'var(--success)';
-        pointsSpan.style.fontSize = '1.1rem';
-        pointsSpan.textContent = `${Number(team.points) || 0} pts`;
-
-        itemDiv.appendChild(left);
-        itemDiv.appendChild(pointsSpan);
-        standingsContainer.appendChild(itemDiv);
+        html += `
+            <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.05); padding: 1rem; border-radius: 8px;">
+                <div style="display:flex; align-items:center; gap: 1rem;">
+                    <span style="font-weight: 800; font-size: 1.2rem; min-width: 30px; color:var(--primary-color)">${medal}</span>
+                    <span style="font-weight: 600;">${escapeHTML(team.name)}</span>
+                </div>
+                <span style="font-weight: 800; color: var(--success); font-size: 1.1rem;">${Number(team.points) || 0} pts</span>
+            </div>
+        `;
     });
 
-    leaderboardContainer.appendChild(infoDiv);
-    leaderboardContainer.appendChild(standingsHeader);
-    leaderboardContainer.appendChild(standingsContainer);
+    html += `</div>`;
 
     if (results.disqualified && results.disqualified.length > 0) {
-        const disqHeader = document.createElement('h4');
-        disqHeader.style.marginBottom = '1rem';
-        disqHeader.style.color = 'var(--danger)';
-        disqHeader.style.borderBottom = '1px solid rgba(255,255,255,0.1)';
-        disqHeader.style.paddingBottom = '0.5rem';
-        disqHeader.textContent = 'Disqualified Teams';
-
-        const disqContainer = document.createElement('div');
-        disqContainer.style.display = 'flex';
-        disqContainer.style.flexWrap = 'wrap';
-        disqContainer.style.gap = '0.5rem';
-
+        html += `
+            <h4 style="margin-bottom: 1rem; color: var(--danger); border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem;">Disqualified Teams</h4>
+            <div style="display:flex; flex-wrap:wrap; gap: 0.5rem;">
+        `;
         results.disqualified.forEach(name => {
-            const span = document.createElement('span');
-            span.style.background = 'rgba(239, 68, 68, 0.1)';
-            span.style.color = '#ef4444';
-            span.style.padding = '0.4rem 0.8rem';
-            span.style.borderRadius = '20px';
-            span.style.fontSize = '0.85rem';
-            span.style.border = '1px solid rgba(239, 68, 68, 0.2)';
-            span.textContent = `❌ ${name}`;
-            disqContainer.appendChild(span);
+            html += `<span style="background:rgba(239, 68, 68, 0.1); color:#ef4444; padding: 0.4rem 0.8rem; border-radius: 20px; font-size: 0.85rem; border: 1px solid rgba(239, 68, 68, 0.2);">❌ ${escapeHTML(name)}</span>`;
         });
-
-        leaderboardContainer.appendChild(disqHeader);
-        leaderboardContainer.appendChild(disqContainer);
+        html += `</div>`;
     }
 
+    leaderboardContainer.innerHTML = html;
     leaderboardModal.classList.remove('hidden');
 }
 
@@ -736,6 +588,7 @@ async function generatePDF(results) {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF();
 
+    // Header
     doc.setFillColor(30, 30, 30);
     doc.rect(0, 0, 210, 40, 'F');
 
@@ -747,6 +600,7 @@ async function generatePDF(results) {
     doc.setFontSize(12);
     doc.text(`Room: ${results.code} | Date: ${new Date().toLocaleString()}`, 105, 30, { align: "center" });
 
+    // Standings
     doc.setTextColor(0, 0, 0);
     doc.setFontSize(16);
     doc.setFont(undefined, 'bold');
@@ -761,6 +615,7 @@ async function generatePDF(results) {
     sorted.forEach((team, index) => {
         if (y > 270) { doc.addPage(); y = 20; }
 
+        // Background for odd rows
         if (index % 2 === 0) {
             doc.setFillColor(245, 245, 245);
             doc.rect(15, y - 5, 180, 10, 'F');
@@ -772,6 +627,7 @@ async function generatePDF(results) {
         y += 10;
     });
 
+    // Disqualified
     if (results.disqualified && results.disqualified.length > 0) {
         y += 10;
         if (y > 270) { doc.addPage(); y = 20; }
@@ -790,6 +646,7 @@ async function generatePDF(results) {
         });
     }
 
+    // Footer
     doc.setFontSize(10);
     doc.setTextColor(150, 150, 150);
     doc.text("Generated by Quiz Buzzer App", 105, 285, { align: "center" });
@@ -802,13 +659,7 @@ let connectedTeams = [];
 socket.on('group_joined', (data) => {
     if (!isHost) return;
 
-    const existingIdx = connectedTeams.findIndex(t => t.socketId === data.socketId);
-    if (existingIdx !== -1) {
-        connectedTeams[existingIdx] = data;
-    } else {
-        connectedTeams.push(data);
-    }
-
+    connectedTeams.push(data);
     renderTeams();
     showToast(`${data.name} just joined!`, 'success');
 });
@@ -857,19 +708,20 @@ function renderDisqualified(disqualified) {
     if (!disqualifiedList) return;
     disqualifiedList.innerHTML = '';
     if (disqualified.length === 0) {
-        disqualifiedList.innerHTML = '<li class="empty-state">None yet</li>';
+        const li = document.createElement('li');
+        li.className = 'empty-state';
+        li.textContent = 'None yet';
+        disqualifiedList.appendChild(li);
         return;
     }
     disqualified.forEach(name => {
         const li = document.createElement('li');
         li.className = 'team-item';
-        li.style.background = 'rgba(239, 68, 68, 0.1)';
-        li.style.borderLeft = '3px solid #ef4444';
-
+        li.style.cssText = 'background:rgba(239, 68, 68, 0.1); border-left: 3px solid #ef4444;';
+        
         const span = document.createElement('span');
         span.style.color = '#ef4444';
         span.textContent = `❌ ${name}`;
-
         li.appendChild(span);
         disqualifiedList.appendChild(li);
     });
@@ -936,30 +788,12 @@ function sendViolation(type, details = '') {
     });
 }
 
-// 1. Visibility Change Detection
+// 1. Primary Anti-Cheat: Document Visibility Change Detection
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
         lockQuizUI();
         sendViolation('TAB_SWITCH', 'Switched browser tab or minimized application');
     }
-});
-
-// 2. Window Blur / System UI Detection
-window.addEventListener('blur', () => {
-    if (isHost || !currentRoomCode) return;
-    lockQuizUI();
-    const isVisible = document.visibilityState === 'visible';
-    if (isVisible) {
-        sendViolation('SUSPICIOUS_SYSTEM_UI', 'Window lost focus while page remained visible (notification panel or app overlay)');
-    } else {
-        sendViolation('WINDOW_BLUR', 'Window lost focus');
-    }
-});
-
-// 3. Page Hide Detection
-window.addEventListener('pagehide', () => {
-    lockQuizUI();
-    sendViolation('PAGE_HIDDEN', 'Page hidden or browser context changed');
 });
 
 // 4. Shortcut Blocking
@@ -991,14 +825,14 @@ setInterval(() => {
     }
 }, 4000);
 
-// Participant Return to Game Button Handler
+// Participant Return to Quiz Button Handler
 if (btnWarningStay) {
     btnWarningStay.addEventListener('click', () => {
         playerState = PLAYER_STATE.RESTORED;
         socket.emit('participant_returned', { code: currentRoomCode });
         unlockQuizUI();
         playerState = PLAYER_STATE.NORMAL;
-        showToast('Returned to game! Quiz unlocked.', 'success');
+        showToast('Returned to quiz! Quiz unlocked.', 'success');
     });
 }
 
@@ -1006,44 +840,27 @@ if (btnWarningStay) {
 socket.on('global_freeze', ({ violatorNames, pendingNames, manualFreeze }) => {
     if (isHost) return;
     if (globalFreezeText) {
-        globalFreezeText.textContent = '';
-
+        let msg = '';
         if (manualFreeze) {
-            const p1 = document.createElement('p');
-            p1.append('🔒 ');
-            const s1 = document.createElement('strong');
-            s1.style.color = 'var(--primary-color)';
-            s1.textContent = 'Room is manually frozen by Host';
-            p1.append(s1, '.');
-            globalFreezeText.appendChild(p1);
+            msg += `🔒 <strong style="color:var(--primary-color)">Room is manually frozen by Host</strong>.<br>`;
         }
         if (violatorNames && violatorNames.length > 0) {
-            const p2 = document.createElement('p');
-            p2.append('⚠️ ');
-            const s2 = document.createElement('strong');
-            s2.style.color = 'var(--danger)';
-            s2.textContent = `Teams '${violatorNames.join("', '")}'`;
-            p2.append(s2, ' triggered anti-cheating alerts!');
-            globalFreezeText.appendChild(p2);
+            const names = violatorNames.map(n => escapeHTML(n)).join("', '");
+            msg += `⚠️ <strong style="color:var(--danger)">Teams '${names}'</strong> triggered anti-cheating alerts!<br>`;
         }
         if (pendingNames && pendingNames.length > 0) {
-            const p3 = document.createElement('p');
-            p3.append('📨 ');
-            const s3 = document.createElement('strong');
-            s3.style.color = 'var(--secondary)';
-            s3.textContent = `Teams '${pendingNames.join("', '")}'`;
-            p3.append(s3, ' are requesting to join!');
-            globalFreezeText.appendChild(p3);
+            const names = pendingNames.map(n => escapeHTML(n)).join("', '");
+            msg += `📨 <strong style="color:var(--secondary)">Teams '${names}'</strong> are requesting to join!<br>`;
         }
 
-        if (!globalFreezeText.childNodes.length) {
-            globalFreezeText.textContent = 'Page is frozen by Host.';
-        }
+        if (!msg) msg = 'Page is frozen by Host.';
+
+        globalFreezeText.innerHTML = msg;
     }
     if (freezeModal) freezeModal.classList.remove('hidden');
 });
 
-// Host: Rich Tab Violation Alerts Received (Strict DOM construction)
+// Host: Rich Tab Violation Alerts Received
 socket.on('tab_violation_alert', ({ violations }) => {
     if (!isHost) return;
 
@@ -1066,85 +883,60 @@ socket.on('tab_violation_alert', ({ violations }) => {
             else if (vType === 'HEARTBEAT_TIMEOUT') badgeColor = '#ec4899';
 
             const div = document.createElement('div');
-            div.style.background = 'rgba(255,255,255,0.05)';
-            div.style.padding = '1rem';
-            div.style.borderRadius = '10px';
-            div.style.marginBottom = '0.8rem';
-            div.style.border = '1px solid rgba(255,255,255,0.1)';
-            div.style.textAlign = 'left';
+            div.style.cssText = 'background:rgba(255,255,255,0.05); padding:1rem; border-radius:10px; margin-bottom:0.8rem; border:1px solid rgba(255,255,255,0.1); text-align:left;';
 
             const headerDiv = document.createElement('div');
-            headerDiv.style.display = 'flex';
-            headerDiv.style.justifyContent = 'space-between';
-            headerDiv.style.alignItems = 'center';
-            headerDiv.style.marginBottom = '0.4rem';
+            headerDiv.style.cssText = 'display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;';
 
             const nameSpan = document.createElement('span');
-            nameSpan.style.fontWeight = '700';
-            nameSpan.style.fontSize = '1.1rem';
-            nameSpan.style.color = '#fff';
+            nameSpan.style.cssText = 'font-weight:700; font-size:1.1rem; color:#fff;';
             nameSpan.textContent = `⚠️ ${rawName}`;
 
             const badgeSpan = document.createElement('span');
-            badgeSpan.style.background = badgeColor;
-            badgeSpan.style.color = '#fff';
-            badgeSpan.style.fontSize = '0.7rem';
-            badgeSpan.style.fontWeight = '800';
-            badgeSpan.style.padding = '0.2rem 0.5rem';
-            badgeSpan.style.borderRadius = '4px';
+            badgeSpan.style.cssText = `background:${badgeColor}; color:#fff; font-size:0.7rem; font-weight:800; padding:0.2rem 0.5rem; border-radius:4px;`;
             badgeSpan.textContent = vType;
 
             headerDiv.appendChild(nameSpan);
             headerDiv.appendChild(badgeSpan);
 
             const detailsDiv = document.createElement('div');
-            detailsDiv.style.fontSize = '0.8rem';
-            detailsDiv.style.color = 'var(--text-secondary)';
-            detailsDiv.style.marginBottom = '0.8rem';
-
+            detailsDiv.style.cssText = 'font-size:0.8rem; color:var(--text-secondary); margin-bottom:0.8rem;';
+            
             const timeDiv = document.createElement('div');
             timeDiv.textContent = `Time: ${vTime}`;
-            const detailsTextDiv = document.createElement('div');
-            detailsTextDiv.textContent = vDetails;
-
+            const textDiv = document.createElement('div');
+            textDiv.textContent = vDetails;
             detailsDiv.appendChild(timeDiv);
-            detailsDiv.appendChild(detailsTextDiv);
+            detailsDiv.appendChild(textDiv);
 
-            const actionContainer = document.createElement('div');
-            actionContainer.style.display = 'flex';
-            actionContainer.style.gap = '0.5rem';
-            actionContainer.style.justifyContent = 'flex-end';
+            const btnGroup = document.createElement('div');
+            btnGroup.style.cssText = 'display:flex; gap:0.5rem; justify-content:flex-end;';
 
             const disqBtn = document.createElement('button');
             disqBtn.className = 'btn warning-btn';
-            disqBtn.style.padding = '0.4rem 0.8rem';
-            disqBtn.style.fontSize = '0.8rem';
+            disqBtn.style.cssText = 'padding:0.4rem 0.8rem; font-size:0.8rem;';
             disqBtn.textContent = 'Disqualify';
             disqBtn.addEventListener('click', () => resolveTeam(vSocketId, 'disqualify'));
 
             const warnBtn = document.createElement('button');
             warnBtn.className = 'btn secondary-btn';
-            warnBtn.style.padding = '0.4rem 0.8rem';
-            warnBtn.style.fontSize = '0.8rem';
-            warnBtn.style.background = '#f59e0b';
-            warnBtn.style.color = '#fff';
+            warnBtn.style.cssText = 'padding:0.4rem 0.8rem; font-size:0.8rem; background:#f59e0b; color:#fff;';
             warnBtn.textContent = 'Warn';
             warnBtn.addEventListener('click', () => resolveTeam(vSocketId, 'warn'));
 
-            const letGoBtn = document.createElement('button');
-            letGoBtn.className = 'btn primary-btn';
-            letGoBtn.style.padding = '0.4rem 0.8rem';
-            letGoBtn.style.fontSize = '0.8rem';
-            letGoBtn.textContent = 'Let Go';
-            letGoBtn.addEventListener('click', () => resolveTeam(vSocketId, 'letgo'));
+            const letgoBtn = document.createElement('button');
+            letgoBtn.className = 'btn primary-btn';
+            letgoBtn.style.cssText = 'padding:0.4rem 0.8rem; font-size:0.8rem;';
+            letgoBtn.textContent = 'Let Go';
+            letgoBtn.addEventListener('click', () => resolveTeam(vSocketId, 'letgo'));
 
-            actionContainer.appendChild(disqBtn);
-            actionContainer.appendChild(warnBtn);
-            actionContainer.appendChild(letGoBtn);
+            btnGroup.appendChild(disqBtn);
+            btnGroup.appendChild(warnBtn);
+            btnGroup.appendChild(letgoBtn);
 
             div.appendChild(headerDiv);
             div.appendChild(detailsDiv);
-            div.appendChild(actionContainer);
+            div.appendChild(btnGroup);
 
             violatorListContainer.appendChild(div);
         });
@@ -1156,14 +948,13 @@ socket.on('tab_violation_alert', ({ violations }) => {
 // Host: Participant returned alert
 socket.on('participant_returned_alert', (data) => {
     if (isHost && data && data.name) {
-        showToast(`Team '${data.name}' returned to game.`, 'info');
+        showToast(`Team '${data.name}' returned to quiz.`, 'info');
     }
 });
 
-// Global resolution helper for host
-window.resolveTeam = (socketId, action) => {
+function resolveTeam(socketId, action) {
     socket.emit('resolve_violation', { code: currentRoomCode, targetSocketId: socketId, action });
-};
+}
 
 // Host: Resolve UI updates
 socket.on('violation_resolved', ({ action, targetSocketId }) => {
@@ -1176,7 +967,7 @@ socket.on('violation_resolved', ({ action, targetSocketId }) => {
     if (redWarningModal) redWarningModal.classList.add('hidden');
 
     if (action === 'letgo') {
-        showToast('Host resumed the game!', 'success');
+        showToast('Host resumed the quiz!', 'success');
     } else if (action === 'warn') {
         showToast('Host issued a warning!', 'warning');
     } else if (action === 'join_resolved') {
@@ -1187,46 +978,82 @@ socket.on('violation_resolved', ({ action, targetSocketId }) => {
         if (socket.id === targetSocketId) {
             if (disqualifiedModal) disqualifiedModal.classList.remove('hidden');
             releaseImmersiveMode();
-            clearSession();
         } else {
-            showToast('A violator was disqualified. Game resumes.', 'warning');
+            showToast('A violator was disqualified. Quiz resumes.', 'warning');
         }
     }
 });
 
-// ----------------- Render Functions (DOM API Standard) -----------------
+// Host receives winner detected event
+socket.on('winner_detected', (data) => {
+    if (!isHost || !data) return;
+    if (winnerPromptMsg && winnerPromptModal) {
+        winnerPromptMsg.innerHTML = `Winner: <strong style="color:var(--primary-color)">${escapeHTML(data.winnerName)}</strong><br>Final Score: <strong style="color:var(--success)">${Number(data.topScore)} Points</strong>`;
+        winnerPromptModal.classList.remove('hidden');
+    }
+});
+
+if (btnApproveWinner) {
+    btnApproveWinner.addEventListener('click', () => {
+        socket.emit('approve_winner_message', { code: currentRoomCode });
+        if (winnerPromptModal) winnerPromptModal.classList.add('hidden');
+    });
+}
+
+if (btnRejectWinner) {
+    btnRejectWinner.addEventListener('click', () => {
+        socket.emit('reject_winner_message', { code: currentRoomCode });
+        if (winnerPromptModal) winnerPromptModal.classList.add('hidden');
+    });
+}
+
+// Winner Participant receives congratulations
+socket.on('winner_congratulations', (data) => {
+    if (isHost || !data) return;
+    if (winnerCongratulationsScore && winnerCongratulationsModal) {
+        winnerCongratulationsScore.textContent = `Final Score: ${Number(data.points)} Points`;
+        winnerCongratulationsModal.classList.remove('hidden');
+    }
+});
+
+if (btnCloseWinnerModal) {
+    btnCloseWinnerModal.addEventListener('click', () => {
+        if (winnerCongratulationsModal) winnerCongratulationsModal.classList.add('hidden');
+    });
+}
+
+// ----------------- Render Functions -----------------
 
 function renderTeams() {
     teamsCount.textContent = connectedTeams.length;
 
     if (connectedTeams.length === 0) {
-        teamsList.innerHTML = `<li class="empty-state">Waiting for players to join...</li>`;
+        teamsList.innerHTML = '';
+        const emptyLi = document.createElement('li');
+        emptyLi.className = 'empty-state';
+        emptyLi.textContent = 'Waiting for players to join...';
+        teamsList.appendChild(emptyLi);
         return;
     }
 
     teamsList.innerHTML = '';
 
+    // Sort teams by points descending
     const sortedTeams = [...connectedTeams].sort((a, b) => (b.points || 0) - (a.points || 0));
 
     sortedTeams.forEach(team => {
         const li = document.createElement('li');
+        const points = Number(team.points) || 0;
 
-        const wrapper = document.createElement('div');
-        wrapper.style.display = 'flex';
-        wrapper.style.justifyContent = 'space-between';
-        wrapper.style.alignItems = 'center';
-        wrapper.style.width = '100%';
+        const mainDiv = document.createElement('div');
+        mainDiv.style.cssText = 'display:flex; justify-content:space-between; align-items:center; width:100%;';
 
-        const leftGroup = document.createElement('div');
-        leftGroup.style.display = 'flex';
-        leftGroup.style.alignItems = 'center';
-        leftGroup.style.gap = '0.5rem';
+        const leftDiv = document.createElement('div');
+        leftDiv.style.cssText = 'display:flex; align-items:center; gap:0.5rem;';
 
         const disqBtn = document.createElement('button');
         disqBtn.className = 'btn warning-btn';
-        disqBtn.style.padding = '0.3rem 0.5rem';
-        disqBtn.style.fontSize = '0.7rem';
-        disqBtn.style.background = '#ef4444';
+        disqBtn.style.cssText = 'padding:0.3rem 0.5rem; font-size:0.7rem; background:#ef4444;';
         disqBtn.textContent = '❌';
         disqBtn.addEventListener('click', () => {
             requestDisqualify(team.socketId, team.name);
@@ -1235,64 +1062,69 @@ function renderTeams() {
         const nameSpan = document.createElement('span');
         nameSpan.textContent = team.name;
 
-        leftGroup.appendChild(disqBtn);
-        leftGroup.appendChild(nameSpan);
+        leftDiv.appendChild(disqBtn);
+        leftDiv.appendChild(nameSpan);
 
-        const ctrlGroup = document.createElement('div');
-        ctrlGroup.className = 'pt-controls';
+        if (team.disconnected) {
+            const statusBadge = document.createElement('span');
+            statusBadge.style.cssText = 'background:#f59e0b; color:#fff; font-size:0.65rem; font-weight:700; padding:0.15rem 0.4rem; border-radius:4px; margin-left:0.2rem;';
+            statusBadge.textContent = 'Reconnecting';
+            leftDiv.appendChild(statusBadge);
+        }
 
-        const minusBtn = document.createElement('button');
-        minusBtn.className = 'pt-btn';
-        minusBtn.textContent = '-';
-        minusBtn.addEventListener('click', () => updatePoints(team.socketId, -1));
+        const ptControls = document.createElement('div');
+        ptControls.className = 'pt-controls';
+
+        const btnMinus1 = document.createElement('button');
+        btnMinus1.className = 'pt-btn';
+        btnMinus1.textContent = '-';
+        btnMinus1.addEventListener('click', () => updatePoints(team.socketId, -1));
 
         const scoreDiv = document.createElement('div');
         scoreDiv.className = 'pt-score';
-        scoreDiv.textContent = Number(team.points) || 0;
+        scoreDiv.textContent = String(points);
 
-        const add10Btn = document.createElement('button');
-        add10Btn.className = 'quick-pt-btn';
-        add10Btn.innerHTML = `+10<br><span style="font-size:0.6rem;opacity:0.8;">(No pass)</span>`;
-        add10Btn.addEventListener('click', () => updatePoints(team.socketId, 10));
+        const btnPlus10 = document.createElement('button');
+        btnPlus10.className = 'quick-pt-btn';
+        btnPlus10.innerHTML = '+10<br><span style="font-size:0.6rem;opacity:0.8;">(No pass)</span>';
+        btnPlus10.addEventListener('click', () => updatePoints(team.socketId, 10));
 
-        const add7Btn = document.createElement('button');
-        add7Btn.className = 'quick-pt-btn';
-        add7Btn.innerHTML = `+7<br><span style="font-size:0.6rem;opacity:0.8;">(1st pass)</span>`;
-        add7Btn.addEventListener('click', () => updatePoints(team.socketId, 7));
+        const btnPlus7 = document.createElement('button');
+        btnPlus7.className = 'quick-pt-btn';
+        btnPlus7.innerHTML = '+7<br><span style="font-size:0.6rem;opacity:0.8;">(1st pass)</span>';
+        btnPlus7.addEventListener('click', () => updatePoints(team.socketId, 7));
 
-        const add4Btn = document.createElement('button');
-        add4Btn.className = 'quick-pt-btn';
-        add4Btn.innerHTML = `+4<br><span style="font-size:0.6rem;opacity:0.8;">(Second pass)</span>`;
-        add4Btn.addEventListener('click', () => updatePoints(team.socketId, 4));
+        const btnPlus4 = document.createElement('button');
+        btnPlus4.className = 'quick-pt-btn';
+        btnPlus4.innerHTML = '+4<br><span style="font-size:0.6rem;opacity:0.8;">(Second pass)</span>';
+        btnPlus4.addEventListener('click', () => updatePoints(team.socketId, 4));
 
-        ctrlGroup.appendChild(minusBtn);
-        ctrlGroup.appendChild(scoreDiv);
-        ctrlGroup.appendChild(add10Btn);
-        ctrlGroup.appendChild(add7Btn);
-        ctrlGroup.appendChild(add4Btn);
+        ptControls.appendChild(btnMinus1);
+        ptControls.appendChild(scoreDiv);
+        ptControls.appendChild(btnPlus10);
+        ptControls.appendChild(btnPlus7);
+        ptControls.appendChild(btnPlus4);
 
-        wrapper.appendChild(leftGroup);
-        wrapper.appendChild(ctrlGroup);
-        li.appendChild(wrapper);
+        mainDiv.appendChild(leftDiv);
+        mainDiv.appendChild(ptControls);
 
+        li.appendChild(mainDiv);
         teamsList.appendChild(li);
     });
 }
 
 // Host: Manual Disqualify Flow
-window.requestDisqualify = (socketId, name) => {
+function requestDisqualify(socketId, name) {
     pendingDisqualifySocketId = socketId;
     if (disqualifyMsg) {
-        disqualifyMsg.textContent = '';
-        disqualifyMsg.append('Are you sure you want to disqualify ');
-        const strong = document.createElement('strong');
-        strong.textContent = `'${name}'`;
-        disqualifyMsg.append(strong, '?');
+        disqualifyMsg.textContent = `Are you sure you want to disqualify '${name}'?`;
     }
 
+    // Freeze room while host decides
     socket.emit('toggle_manual_freeze', { code: currentRoomCode, freeze: true });
+
     if (hostConfirmModal) hostConfirmModal.classList.remove('hidden');
-};
+}
 
 if (btnConfirmDisqualify) {
     btnConfirmDisqualify.addEventListener('click', () => {
@@ -1318,12 +1150,14 @@ if (btnCancelDisqualify) {
 }
 
 function renderBuzzesView(buzzes) {
+    // Render for Host main list
     if (isHost) {
         renderBuzzesList(buzzes, buzzesList);
     } else {
+        // Player view: check if player has buzzed and sync buzzed state
         const myBuzzIndex = buzzes.findIndex(b => b.socketId === socket.id);
         if (myBuzzIndex !== -1) {
-            setPlayerBuzzerState('buzzed', myBuzzIndex + 1);
+            setPlayerBuzzerState('buzzed');
         }
         renderBuzzesList(buzzes, playerBuzzesList);
     }
@@ -1347,27 +1181,14 @@ function renderBuzzesList(buzzes, container) {
         li.className = 'buzz-item';
         if (index === 0) li.classList.add('first-place');
 
-        const rankSpan = document.createElement('span');
-        rankSpan.className = 'rank';
-        rankSpan.textContent = `#${index + 1}`;
+        let rankStr = `#${index + 1}`;
 
-        const nameSpan = document.createElement('span');
-        nameSpan.className = 'team-name';
-        nameSpan.style.flex = '1';
-        nameSpan.style.marginLeft = '1rem';
-        nameSpan.textContent = buzz.name;
+        li.innerHTML = `
+            <span class="rank">${rankStr}</span>
+            <span class="team-name" style="flex:1; margin-left:1rem;">${escapeHTML(buzz.name)}</span>
+            <span class="time-diff" style="font-family:monospace; font-size:0.75rem; color:var(--primary-color); opacity:0.8;">${escapeHTML(buzz.timeStr)}</span>
+        `;
 
-        const timeSpan = document.createElement('span');
-        timeSpan.className = 'time-diff';
-        timeSpan.style.fontFamily = 'monospace';
-        timeSpan.style.fontSize = '0.75rem';
-        timeSpan.style.color = 'var(--primary-color)';
-        timeSpan.style.opacity = '0.8';
-        timeSpan.textContent = buzz.timeStr || '';
-
-        li.appendChild(rankSpan);
-        li.appendChild(nameSpan);
-        li.appendChild(timeSpan);
         container.appendChild(li);
     });
 }
@@ -1395,7 +1216,7 @@ function setPlayerBuzzerState(state, rank = null) {
                 playerStatusText.textContent = `You buzzed in rank #${rank}`;
                 playerStatusText.style.color = rank === 1 ? '#22c55e' : '#3b82f6';
             } else {
-                playerStatusText.textContent = 'Buzzed! Ranking...';
+                playerStatusText.textContent = 'Buzzed!';
                 playerStatusText.style.color = '#3b82f6';
             }
         }
@@ -1414,7 +1235,11 @@ function renderHostLeaderboard(teamsWithPoints) {
     if (!hostLeaderboardSummary) return;
 
     if (teamsWithPoints.length === 0) {
-        hostLeaderboardSummary.innerHTML = `<span class="empty-state">No teams yet</span>`;
+        hostLeaderboardSummary.innerHTML = '';
+        const emptySpan = document.createElement('span');
+        emptySpan.className = 'empty-state';
+        emptySpan.textContent = 'No teams yet';
+        hostLeaderboardSummary.appendChild(emptySpan);
         return;
     }
 
@@ -1426,10 +1251,7 @@ function renderHostLeaderboard(teamsWithPoints) {
         div.className = 'points-pill';
 
         const innerDiv = document.createElement('div');
-        innerDiv.style.display = 'flex';
-        innerDiv.style.justifyContent = 'space-between';
-        innerDiv.style.width = '100%';
-        innerDiv.style.alignItems = 'center';
+        innerDiv.style.cssText = 'display:flex; justify-content:space-between; width:100%; align-items:center;';
 
         const nameSpan = document.createElement('span');
         nameSpan.style.fontWeight = '600';
@@ -1438,11 +1260,16 @@ function renderHostLeaderboard(teamsWithPoints) {
         const scoreSpan = document.createElement('span');
         scoreSpan.className = 'score';
         scoreSpan.style.marginLeft = '1rem';
-        scoreSpan.textContent = Number(team.points) || 0;
+        scoreSpan.textContent = String(Number(team.points) || 0);
 
         innerDiv.appendChild(nameSpan);
         innerDiv.appendChild(scoreSpan);
         div.appendChild(innerDiv);
+
         hostLeaderboardSummary.appendChild(div);
     });
+}
+
+function renderPlayerPoints(teamsWithPoints) {
+    // This is now disabled for players
 }
